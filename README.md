@@ -13,11 +13,12 @@ Open `index.html` in a modern browser (Chrome, Edge, Firefox or Safari with WebG
    - A line that crosses enemy land is a **front-line offensive**. Ends that stop short are tied to the nearest edge.
    - A closed loop is an **encirclement** and takes the enemy ground inside it.
    - A short arrow that stops deep in enemy land is a **thrust**: a salient along the arrow.
-   - **Flip objective** takes the other side of your line when that is a comparable piece.
-3. **Attack.** Choose how many troops to commit (never the whole army) and the enemy's defense strength, from 1 (scattered militia) to 100 (fortified line). The dialog shows how many defenders hold the sector, the force ratio, and a forecast: duration, expected end date and losses on both sides. Stronger defenses take longer and cost more.
-4. **Run more operations.** Pick a side again and draw the next line while the first offensive is still running. Blue and Red can attack each other at the same time; where two offensives meet head-on, the stronger side pushes.
-5. **Watch.** The two big numbers on the map are the men fighting in each battle: the attacker's on his side of the front, the defender's on the other. They fall as casualties mount. Zoom in to watch breakthroughs, counter-attacks and encirclements. Press `H` to hide the interface.
-6. An offensive ends when it takes its objective, runs out of men, or bogs down. You can also **halt** it from the operations list and keep the ground taken.
+   - ⇄ next to a planned line takes the other side of it when that is a comparable piece; × removes the line.
+3. **Draw more lines.** Each new stroke is added to the list of planned lines; nothing is replaced. Switch to the other side and draw its lines too if you want Blue and Red to attack at the same moment.
+4. **Attack.** One press launches every planned line together. For each line, choose how many troops to commit and the enemy's defense strength, from 1 (scattered militia) to 100 (fortified line). A side can't commit more men than it has ready across all its lines. Each line shows how many defenders hold its sector, the force ratio, and a forecast: duration, expected end date and losses on both sides. Stronger defenses take longer and cost more.
+5. **Keep going.** You can plan and launch more lines while offensives are running. Where Blue and Red offensives meet head-on, the stronger side pushes.
+6. **Watch.** The two big numbers on the map are the men fighting in each battle: the attacker's on his side of the front, the defender's on the other. They fall as casualties mount. Zoom in to watch breakthroughs, counter-attacks and encirclements. Press `H` to hide the interface.
+7. An offensive ends when it takes its objective, runs out of men, or bogs down. You can also **halt** it from the operations list and keep the ground taken.
 
 ### Panels
 
@@ -47,7 +48,7 @@ The war starts on **8 January 1902, 00:00**. The clock advances by the hour.
 | Hide / show the interface | `H` or the eye button | Eye button |
 | Pause / resume | `Space` | ❚❚ |
 | Speed | `1`–`4` | Speed buttons |
-| Clear the line | `Esc` | Clear |
+| Remove the last planned line | `Esc` | × on the line |
 
 The war, its running operations, the clock and the diary are saved in the browser. **New war** resets to the opening situation: Blue with 260,000 men, Red with 150,000.
 

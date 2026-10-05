@@ -11,6 +11,7 @@
     { label: '40×', sph: 0.25 },
   ];
   const SAVE_KEY = 'warmap-iran-1902-v2';
+  const MAX_PLANS = 8;
   const MODE_LABEL = { front: 'Front-line offensive', encircle: 'Encirclement', thrust: 'Thrust (salient)' };
   const fmt = (v) => Math.round(Math.max(0, v)).toLocaleString('en-US');
   const short = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : v >= 1e4 ? `${Math.round(v / 1000)}k` : fmt(v));
@@ -47,7 +48,7 @@
       this.overlay = new WM.Overlay($('overlay'), world);
       this.st = {
         time: 0, speed: 0, paused: false,
-        side: 0, drawing: null, path: null, plan: null, prep: null, planSeed: 1,
+        side: 0, drawing: null, plans: [], planCounter: 0,
         log: [], showLabels: true, showProvinces: true, uiHidden: false, winner: 0,
       };
       this.view = { cx: 0, cy: 0, scale: 1, dpr: 1, fitScale: 1, w: 1, h: 1 };
@@ -84,7 +85,7 @@
       this.war = new WM.War(this.world);
       const st = this.st;
       st.time = 0;
-      st.plan = null; st.prep = null; st.path = null; st.side = 0; st.winner = 0;
+      st.plans = []; st.side = 0; st.winner = 0;
       st.log = [];
       const held = WM.START_RED_PROVINCES.slice(0, -1).join(', ') + ' and ' + WM.START_RED_PROVINCES.slice(-1);
       this.addLog({ t: 0, side: WM.RED, text: `Red forces hold ${held}, with ${fmt(WM.START_ARMY[WM.RED])} men under arms.` });
@@ -132,7 +133,7 @@
       this.war.syncHalo();
       this.renderer.setOwnership(this.war.display);
       this.war.dirty = false;
-      this.renderer.setObjectives(this.war.ops, this.st.plan);
+      this.renderer.setObjectives(this.war.ops, this.st.plans);
       this.renderer.setGlow();
       this.mapDirty = this.overlayDirty = true;
     }
@@ -317,7 +318,7 @@
         else if (e.key === '-' || e.key === '_') this.zoomAt(this.view.w / 2, this.view.h / 2, 1 / 1.4);
         else if (k === 'f') this.fit();
         else if (k === 'h') this.toggleUi();
-        else if (e.key === 'Escape') this.clearPlan();
+        else if (e.key === 'Escape') this.removePlan(this.st.plans.length ? this.st.plans[this.st.plans.length - 1].id : 0);
       });
     }
 
@@ -326,13 +327,8 @@
     }
 
     startDraw(x, y) {
-      const st = this.st;
-      st.drawing = [this.toWorld(x, y)];
-      st.plan = null;
-      st.prep = null;
-      this.renderer.setObjectives(this.war.ops, null);
-      this.mapDirty = this.overlayDirty = true;
-      this.refreshPanels();
+      this.st.drawing = [this.toWorld(x, y)];
+      this.overlayDirty = true;
     }
 
     cancelDraw() {
@@ -340,37 +336,52 @@
       this.overlayDirty = true;
     }
 
+    // Every finished stroke becomes another planned line; nothing is replaced.
     endDraw() {
       const st = this.st;
       const path = st.drawing;
       st.drawing = null;
       this.overlayDirty = true;
-      if (!path || path.length < 3) { this.refreshPanels(); return; }
-      st.path = path;
-      st.planSeed = (Math.random() * 1e6) | 0;
-      this.computePlan(false);
-    }
-
-    computePlan(flip) {
-      const st = this.st;
-      const res = this.planner.plan(st.side, st.path, flip, st.planSeed);
-      st.prep = null;
-      if (!res.ok) {
-        st.plan = null;
-        this.toast(res.reason);
-      } else {
-        st.plan = res;
-        this.setTab('command');
+      if (!path || path.length < 3) return;
+      if (st.plans.length >= MAX_PLANS) {
+        this.toast(`You can plan up to ${MAX_PLANS} lines at once. Attack or remove one first.`);
+        return;
       }
-      this.renderer.setObjectives(this.war.ops, st.plan);
-      this.mapDirty = this.overlayDirty = true;
-      this.refreshPanels();
+      const entry = { id: ++st.planCounter, side: st.side, path, seed: (Math.random() * 1e6) | 0, plan: null };
+      if (!this.replan(entry, false)) return;
+      st.plans.push(entry);
+      this.setTab('command');
+      this.plansChanged();
     }
 
-    clearPlan() {
+    replan(entry, flip) {
+      const res = this.planner.plan(entry.side, entry.path, flip, entry.seed);
+      if (!res.ok) { this.toast(res.reason); return false; }
+      entry.plan = res;
+      entry.prep = null;
+      return true;
+    }
+
+    flipPlan(id) {
+      const entry = this.st.plans.find((e) => e.id === id);
+      if (entry && entry.plan.canFlip && this.replan(entry, !entry.plan.flipped)) this.plansChanged();
+    }
+
+    removePlan(id) {
       const st = this.st;
-      st.path = null; st.plan = null; st.prep = null; st.drawing = null;
-      this.renderer.setObjectives(this.war.ops, null);
+      const n = st.plans.length;
+      st.plans = st.plans.filter((e) => e.id !== id);
+      if (st.plans.length !== n) this.plansChanged();
+    }
+
+    clearPlans() {
+      this.st.plans = [];
+      this.st.drawing = null;
+      this.plansChanged();
+    }
+
+    plansChanged() {
+      this.renderer.setObjectives(this.war.ops, this.st.plans);
       this.mapDirty = this.overlayDirty = true;
       this.refreshPanels();
     }
@@ -381,8 +392,14 @@
       $('btnPause').addEventListener('click', () => this.togglePause());
       document.querySelectorAll('.spd').forEach((b) => b.addEventListener('click', () => this.setSpeed(+b.dataset.speed)));
       $('btnAttack').addEventListener('click', () => this.openModal());
-      $('btnFlip').addEventListener('click', () => { if (this.st.plan) this.computePlan(!this.st.plan.flipped); });
-      $('btnClear').addEventListener('click', () => this.clearPlan());
+      $('btnClear').addEventListener('click', () => this.clearPlans());
+      $('planList').addEventListener('click', (e) => {
+        const li = e.target.closest('.plan');
+        if (!li) return;
+        const id = +li.dataset.id;
+        if (e.target.closest('.plan-flip')) this.flipPlan(id);
+        else if (e.target.closest('.plan-remove')) this.removePlan(id);
+      });
       $('zoomIn').addEventListener('click', () => this.zoomAt(this.view.w / 2, this.view.h / 2, 1.5));
       $('zoomOut').addEventListener('click', () => this.zoomAt(this.view.w / 2, this.view.h / 2, 1 / 1.5));
       $('zoomFit').addEventListener('click', () => this.fit());
@@ -392,8 +409,10 @@
       $('optProvinces').addEventListener('change', (e) => { this.st.showProvinces = e.target.checked; this.overlayDirty = true; });
       $('diaryToggle').addEventListener('click', () => this.setDiary($('diary').dataset.collapsed === 'true'));
       document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => this.setTab(b.dataset.tab)));
-      $('troops').addEventListener('input', () => this.refreshEstimate(true));
-      $('defense').addEventListener('input', () => this.refreshEstimate(true));
+      $('amPlans').addEventListener('input', (e) => {
+        const sec = e.target.closest('.am-plan');
+        if (sec) this.refreshEstimates(+sec.dataset.id);
+      });
       $('amCancel').addEventListener('click', () => this.closeModal());
       $('amLaunch').addEventListener('click', () => this.launch());
       $('attackModal').addEventListener('click', (e) => { if (e.target === $('attackModal')) this.closeModal(); });
@@ -455,9 +474,7 @@
     selectSide(side) {
       const st = this.st;
       st.side = st.side === side ? 0 : side;
-      st.path = null; st.plan = null; st.prep = null;
-      this.renderer.setObjectives(this.war.ops, null);
-      this.mapDirty = this.overlayDirty = true;
+      this.overlayDirty = true;
       this.refreshPanels();
     }
 
@@ -516,31 +533,38 @@
       this.el.classList.toggle('mode-plan', !!st.side);
       this.el.dataset.side = st.side || '';
       document.querySelectorAll('.side').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.side === st.side)));
-      const plan = st.plan;
+      const plans = st.plans;
       const hint = $('hint');
       if (st.winner) {
         $('planHint').textContent = `${WM.SIDE_NAME[st.winner]} controls all of Iran. Start a new war to play again.`;
+      } else if (plans.length) {
+        $('planHint').innerHTML = `${plans.length} ${plans.length === 1 ? 'line' : 'lines'} planned. Draw more, switch sides to plan the other army's attack too, then press <b>Attack</b> to launch them all at once.`;
       } else if (!st.side) {
-        $('planHint').textContent = 'Pick the side you want to attack with. You can run several offensives at once, for both sides.';
+        $('planHint').textContent = 'Pick a side, then draw lines into enemy land. You can draw several lines, for one side or both, and launch them together.';
       } else {
         const enemy = WM.SIDE_NAME[st.side === WM.BLUE ? WM.RED : WM.BLUE];
-        $('planHint').innerHTML = plan
-          ? `Hatched ground is the objective. The line has been shaped into a realistic front. Press <b>Attack</b> to commit troops, or draw again.`
-          : `Draw the line your troops should reach in ${enemy} territory. Everything between your front and the line becomes the objective. A loop encircles; a short stroke is a thrust.`;
+        $('planHint').textContent = `Draw the line your troops should reach in ${enemy} territory. Everything between your front and the line becomes the objective. A loop encircles; a short stroke is a thrust. Draw more lines to attack in several places at once.`;
       }
-      $('planFacts').hidden = !plan;
-      $('planActions').hidden = !st.side;
-      if (plan) {
-        $('pfMode').textContent = MODE_LABEL[plan.mode] + (plan.flipped ? ' (flipped)' : '');
-        $('pfArea').textContent = WM.formatKm2(plan.area);
-        const towns = plan.cities;
-        $('pfTowns').textContent = towns.length ? towns.slice(0, 4).join(', ') + (towns.length > 4 ? ` +${towns.length - 4}` : '') : 'None';
-        const prov = plan.provinces;
-        $('pfProv').textContent = prov.slice(0, 3).join(', ') + (prov.length > 3 ? ` +${prov.length - 3}` : '');
-      }
-      $('btnAttack').disabled = !plan;
-      $('btnFlip').disabled = !(plan && plan.canFlip);
-      $('btnClear').disabled = !plan && !st.path;
+      $('planList').replaceChildren(...plans.map((e, i) => {
+        const p = e.plan;
+        const li = document.createElement('li');
+        li.className = 'plan';
+        li.dataset.id = e.id;
+        li.dataset.side = p.attacker;
+        const towns = p.cities.length ? ` · ${p.cities.slice(0, 2).join(', ')}${p.cities.length > 2 ? ` +${p.cities.length - 2}` : ''}` : '';
+        li.innerHTML = `<div class="plan-text"><span class="plan-title"></span><span class="plan-sub"></span></div>
+          <button type="button" class="plan-flip" title="Take the other side of this line" aria-label="Flip objective">⇄</button>
+          <button type="button" class="plan-remove" title="Remove this line" aria-label="Remove line">×</button>`;
+        li.querySelector('.plan-title').textContent = `Line ${i + 1} · ${WM.SIDE_NAME[p.attacker]} → ${WM.SIDE_NAME[p.enemy]}`;
+        li.querySelector('.plan-sub').textContent = `${MODE_LABEL[p.mode]}${p.flipped ? ' (flipped)' : ''} · ${WM.formatKm2(p.area)}${towns}`;
+        li.querySelector('.plan-flip').disabled = !p.canFlip;
+        return li;
+      }));
+      $('planList').hidden = !plans.length;
+      $('planActions').hidden = !plans.length && !st.side;
+      $('btnAttack').disabled = !plans.length;
+      $('btnAttack').textContent = plans.length > 1 ? `Attack with all ${plans.length}` : 'Attack';
+      $('btnClear').disabled = !plans.length;
       hint.textContent = st.side
         ? 'Drag to draw · Right-drag or two fingers to pan · Scroll to zoom · H hides the interface'
         : 'Drag to pan · Scroll to zoom · Space pauses · 1–4 speed · H hides the interface';
@@ -626,98 +650,183 @@
     }
 
     // ------------------------------------------------------- offensives ---
+    // One section per planned line: troops, enemy defense and a forecast.
     openModal() {
-      const st = this.st;
-      if (!st.plan) return;
-      const avail = this.war.available(st.plan.attacker);
-      if (avail < 5000) {
-        this.toast(`${WM.SIDE_NAME[st.plan.attacker]} has no troops to spare. Halt an offensive or wait for recruits.`);
-        return;
+      const st = this.st, war = this.war;
+      if (!st.plans.length) return;
+      for (const e of st.plans) if (!e.prep) e.prep = WM.prepareOperation(this.world, e.plan, e.seed);
+      // Suggested commitments, scaled down if a side's lines need more than it has.
+      for (const side of [1, 2]) {
+        const mine = st.plans.filter((e) => e.plan.attacker === side);
+        if (!mine.length) continue;
+        const avail = Math.floor(war.available(side) / 1000) * 1000;
+        mine.forEach((e) => { e.troops = Math.max(5000, Math.round((e.prep.frontKm0 * 120) / 1000) * 1000); });
+        const total = mine.reduce((n, e) => n + e.troops, 0), budget = avail * 0.7;
+        if (total > budget) mine.forEach((e) => { e.troops = Math.max(5000, Math.floor((e.troops * budget) / total / 1000) * 1000); });
       }
-      st.prep = WM.prepareOperation(this.world, st.plan, st.planSeed);
-      const att = WM.SIDE_NAME[st.plan.attacker], en = WM.SIDE_NAME[st.plan.enemy];
-      $('amTitle').textContent = `Operation ${this.war.nextName()}`;
-      const towns = st.plan.cities.length;
-      $('amSub').textContent = `${att} against ${en} · ${MODE_LABEL[st.plan.mode]} · ${WM.formatKm2(st.plan.area)} · ${towns} ${towns === 1 ? 'town' : 'towns'}`;
-      const max = Math.floor(avail / 1000) * 1000;
-      const troops = $('troops');
-      troops.max = String(max);
-      const suggested = Math.round((st.prep.frontKm0 * 120) / 1000) * 1000;
-      troops.value = String(WM.clamp(suggested, 5000, Math.max(5000, Math.round(max * 0.6 / 1000) * 1000)));
-      $('troopsMax').textContent = `${fmt(max)} ready`;
+      st.plans.forEach((e) => { if (!e.defense) e.defense = 50; });
+      const n = st.plans.length;
+      $('amTitle').textContent = n === 1 ? `Operation ${war.nextName(0)}` : `${n} operations, launched together`;
+      $('amPlans').replaceChildren(...st.plans.map((e, i) => {
+        const p = e.plan;
+        const sec = document.createElement('section');
+        sec.className = 'am-plan';
+        sec.dataset.id = e.id;
+        sec.dataset.side = p.attacker;
+        const towns = p.cities.length;
+        sec.innerHTML = `
+          <h3 class="am-op"><span class="am-name"></span><span class="am-side"></span></h3>
+          <p class="am-sub"></p>
+          <label class="am-label"><span>Troops committed</span><output class="o-troops"></output></label>
+          <input type="range" class="i-troops" min="5000" step="1000" aria-label="Troops committed">
+          <div class="am-scale" aria-hidden="true"><span>5,000</span><span class="o-max"></span></div>
+          <label class="am-label"><span>Enemy defense strength</span><output class="o-def"></output></label>
+          <input type="range" class="i-def" min="1" max="100" aria-label="Enemy defense strength">
+          <div class="am-scale" aria-hidden="true"><span>Militia</span><span>Fortified line</span></div>
+          <div class="am-tier"><span class="o-tier"></span><span class="am-def o-defenders"></span></div>
+          <dl class="facts">
+            <dt>Force ratio</dt><dd class="o-ratio"></dd>
+            <dt>Forecast</dt><dd class="o-outcome"></dd>
+            <dt>Expected end</dt><dd class="o-end"></dd>
+            <dt>Our losses</dt><dd class="o-loss"></dd>
+            <dt>Enemy losses</dt><dd class="o-eloss"></dd>
+          </dl>`;
+        sec.querySelector('.am-name').textContent = `Operation ${war.nextName(i)}`;
+        sec.querySelector('.am-side').textContent = `${WM.SIDE_NAME[p.attacker]} → ${WM.SIDE_NAME[p.enemy]}`;
+        sec.querySelector('.am-sub').textContent = `Line ${i + 1} · ${MODE_LABEL[p.mode]} · ${WM.formatKm2(p.area)} · ${towns} ${towns === 1 ? 'town' : 'towns'}`;
+        const ti = sec.querySelector('.i-troops');
+        ti.max = String(Math.max(5000, Math.floor(war.available(p.attacker) / 1000) * 1000));
+        ti.value = String(e.troops);
+        sec.querySelector('.i-def').value = String(e.defense);
+        return sec;
+      }));
+      $('amLaunch').textContent = n === 1 ? 'Launch attack' : `Launch all ${n} attacks`;
       $('attackModal').hidden = false;
-      this.refreshEstimate(false);
+      this.refreshEstimates(0);
       this.overlayDirty = true;
-      $('troops').focus();
+      const first = $('amPlans').querySelector('input');
+      if (first) first.focus();
     }
 
     closeModal() {
       $('attackModal').hidden = true;
+      this.fcQueue = [];
       this.fc = null;
       clearTimeout(this.fcTimer);
       this.overlayDirty = true;
     }
 
-    refreshEstimate(debounce) {
-      const st = this.st;
-      if (!st.prep) return;
-      const troops = +$('troops').value, d = +$('defense').value;
-      $('troopsOut').textContent = fmt(troops);
-      $('defenseOut').textContent = d;
-      $('defenseTier').textContent = WM.defenseTier(d);
-      const defenders = this.war.defendersFor(st.plan.enemy, WM.sectorDefenders(st.prep, d));
-      $('amDefenders').textContent = `≈ ${fmt(defenders)} defenders in the sector`;
-      const ratio = troops / Math.max(defenders, 1);
-      $('amRatio').textContent = ratio >= 1 ? `${ratio.toFixed(1)} : 1 in our favour` : `1 : ${(1 / ratio).toFixed(1)} against us`;
-      for (const id of ['amOutcome', 'amEnd', 'amLosses', 'amEnemyLosses']) {
-        $(id).textContent = id === 'amOutcome' ? 'Forecasting…' : '–';
-        $(id).classList.toggle('pending', true);
+    // Reads every section, keeps each side's lines within the men it has
+    // ready, works out the defenders each sector would get when launched in
+    // order, and restarts the forecasts.
+    refreshEstimates(changedId) {
+      const st = this.st, war = this.war;
+      const secs = new Map([...$('amPlans').querySelectorAll('.am-plan')].map((el) => [+el.dataset.id, el]));
+      for (const e of st.plans) {
+        const el = secs.get(e.id);
+        e.troops = +el.querySelector('.i-troops').value;
+        e.defense = +el.querySelector('.i-def').value;
       }
+      const ready = [0, war.available(1), war.available(2)];
+      let short = '';
+      for (const side of [1, 2]) {
+        const mine = st.plans.filter((e) => e.plan.attacker === side);
+        for (const e of mine) {
+          const others = mine.reduce((n, o) => n + (o === e ? 0 : o.troops), 0);
+          const max = Math.max(5000, Math.floor((ready[side] - others) / 1000) * 1000);
+          const input = secs.get(e.id).querySelector('.i-troops');
+          input.max = String(max);
+          if (e.troops > max && e.id === changedId) { e.troops = max; input.value = String(max); }
+          secs.get(e.id).querySelector('.o-max').textContent = `${fmt(Math.max(0, ready[side] - others))} ready`;
+        }
+        const total = mine.reduce((n, e) => n + e.troops, 0);
+        if (mine.length && total > ready[side]) short = `${WM.SIDE_NAME[side]} has only ${fmt(ready[side])} men ready for ${fmt(total)} committed. Lower the troops or remove a line.`;
+      }
+      // Launch order matters: each sector's defenders come out of what is left.
+      const avail = ready.slice();
+      for (const e of st.plans) {
+        const p = e.plan;
+        const wanted = WM.sectorDefenders(e.prep, e.defense);
+        e.defenders = Math.min(wanted, Math.max(avail[p.enemy] * 0.8, wanted * 0.25, 0));
+        avail[p.attacker] -= e.troops;
+        avail[p.enemy] -= e.defenders;
+        const el = secs.get(e.id);
+        el.querySelector('.o-troops').textContent = fmt(e.troops);
+        el.querySelector('.o-def').textContent = e.defense;
+        el.querySelector('.o-tier').textContent = WM.defenseTier(e.defense);
+        el.querySelector('.o-defenders').textContent = `≈ ${fmt(e.defenders)} defenders in the sector`;
+        const ratio = e.troops / Math.max(e.defenders, 1);
+        el.querySelector('.o-ratio').textContent = ratio >= 1 ? `${ratio.toFixed(1)} : 1 in our favour` : `1 : ${(1 / ratio).toFixed(1)} against us`;
+        el.querySelector('.o-outcome').textContent = 'Forecasting…';
+        for (const c of ['.o-outcome', '.o-end', '.o-loss', '.o-eloss']) el.querySelector(c).classList.add('pending');
+        for (const c of ['.o-end', '.o-loss', '.o-eloss']) el.querySelector(c).textContent = '–';
+      }
+      $('amShort').textContent = short;
+      $('amShort').hidden = !short;
+      $('amLaunch').disabled = !!short;
+      this.fcQueue = [];
       this.fc = null;
       clearTimeout(this.fcTimer);
-      this.fcTimer = setTimeout(() => {
-        this.fc = new WM.Forecast(this.war, st.plan, st.prep, troops, d, st.time);
-      }, debounce ? 220 : 0);
+      this.fcTimer = setTimeout(() => { this.fcQueue = st.plans.slice(); }, changedId ? 220 : 0);
     }
 
-    showForecast(r) {
-      if (!r) return;
+    // Forecasts run one line at a time, a few milliseconds per frame.
+    pumpForecasts() {
+      if (!this.fc && this.fcQueue && this.fcQueue.length) {
+        const e = this.fcQueue.shift();
+        this.fc = new WM.Forecast(this.war, e.plan, e.prep, e.troops, e.defense, this.st.time, e.defenders);
+        this.fcEntry = e;
+      }
+      if (this.fc && this.fc.run(10)) {
+        this.showForecast(this.fcEntry, this.fc.result());
+        this.fc = null;
+      }
+    }
+
+    showForecast(entry, r) {
+      const el = $('amPlans').querySelector(`.am-plan[data-id="${entry.id}"]`);
+      if (!el || !r) return;
       const pct = Math.round(r.progress * 100);
-      const outcome = r.reason === 'success'
+      el.querySelector('.o-outcome').textContent = r.reason === 'success'
         ? `Objective taken (${pct}%) in ≈ ${WM.formatDuration(r.hours)}`
         : r.reason === 'exhausted'
           ? `Runs out of men at ${pct}% after ≈ ${WM.formatDuration(r.hours)}`
           : r.reason === 'stalled'
             ? `Bogs down at ${pct}% after ≈ ${WM.formatDuration(r.hours)}`
             : `Still fighting at ${pct}% after ${WM.formatDuration(r.hours)}`;
-      $('amOutcome').textContent = outcome;
-      $('amEnd').textContent = WM.formatStamp(this.st.time + r.hours);
-      $('amLosses').textContent = `≈ ${fmt(r.lossAtt)} (${fmt(r.killedAtt)} killed)`;
-      $('amEnemyLosses').textContent = `≈ ${fmt(r.lossDef)} (${fmt(r.killedDef)} killed)`;
-      for (const id of ['amOutcome', 'amEnd', 'amLosses', 'amEnemyLosses']) $(id).classList.remove('pending');
+      el.querySelector('.o-end').textContent = WM.formatStamp(this.st.time + r.hours);
+      el.querySelector('.o-loss').textContent = `≈ ${fmt(r.lossAtt)} (${fmt(r.killedAtt)} killed)`;
+      el.querySelector('.o-eloss').textContent = `≈ ${fmt(r.lossDef)} (${fmt(r.killedDef)} killed)`;
+      for (const c of ['.o-outcome', '.o-end', '.o-loss', '.o-eloss']) el.querySelector(c).classList.remove('pending');
     }
 
+    // Every planned line becomes an operation at the same moment.
     launch() {
       const st = this.st;
-      if (!st.plan || !st.prep) return;
-      const troops = +$('troops').value, d = +$('defense').value;
-      const op = this.war.launch(st.plan, st.prep, { troops, defense: d, t: st.time });
+      if (!st.plans.length) return;
+      this.refreshEstimates(0);
+      if ($('amLaunch').disabled) return;
+      const launched = [];
+      for (const e of st.plans) {
+        const op = this.war.launch(e.plan, e.prep, { troops: e.troops, defense: e.defense, t: st.time });
+        if (!op) continue;
+        launched.push(op);
+        const att = WM.SIDE_NAME[op.side], en = WM.SIDE_NAME[op.enemy];
+        const towns = e.plan.cities.length ? ` towards ${e.plan.cities.slice(0, 3).join(', ')}` : '';
+        this.addLog({
+          t: st.time, side: op.side, kind: 'op',
+          text: `Operation ${op.name}: ${att} attacks ${en}${towns} with ${fmt(e.troops)} men. About ${fmt(op.defPool0)} ${en} troops defend the sector (${WM.defenseTier(e.defense).toLowerCase()}).`,
+        });
+      }
       this.closeModal();
-      if (!op) { this.toast('That objective is no longer held by the enemy. Draw a new line.'); this.clearPlan(); return; }
-      const att = WM.SIDE_NAME[op.side], en = WM.SIDE_NAME[op.enemy];
-      const towns = st.plan.cities.length ? ` towards ${st.plan.cities.slice(0, 3).join(', ')}` : '';
-      this.addLog({
-        t: st.time, side: op.side, kind: 'op',
-        text: `Operation ${op.name}: ${att} attacks ${en}${towns} with ${fmt(troops)} men. About ${fmt(op.defPool0)} ${en} troops defend the sector (${WM.defenseTier(d).toLowerCase()}).`,
-      });
-      st.plan = null; st.prep = null; st.path = null;
-      this.renderer.setObjectives(this.war.ops, null);
-      this.mapDirty = this.overlayDirty = true;
-      this.refreshPanels();
-      this.refreshOps();
-      this.refreshStats();
+      st.plans = [];
+      this.plansChanged();
+      this.opsChanged();
       this.setTab('ops');
-      this.toast(st.paused ? `Operation ${op.name} is ready. The clock is paused; press Space to start.` : `Operation ${op.name} launched.`);
+      if (!launched.length) { this.toast('Those objectives are no longer held by the enemy. Draw new lines.'); return; }
+      const names = launched.map((o) => o.name).join(', ');
+      const what = launched.length === 1 ? `Operation ${names} launched.` : `${launched.length} operations launched together: ${names}.`;
+      this.toast(st.paused ? `${what} The clock is paused; press Space to start.` : what);
     }
 
     haltOperation(op) {
@@ -749,7 +858,7 @@
     }
 
     opsChanged() {
-      this.renderer.setObjectives(this.war.ops, this.st.plan);
+      this.renderer.setObjectives(this.war.ops, this.st.plans);
       this.mapDirty = this.overlayDirty = true;
       this.refreshOps();
       this.refreshStats();
@@ -814,30 +923,24 @@
         this.overlayDirty = true;
       }
       if (this.logDirty) this.renderLog();
-      if (this.fc) {
-        if (this.fc.run(10)) {
-          this.showForecast(this.fc.result());
-          this.fc = null;
-        }
-      }
+      if (modalOpen) this.pumpForecasts();
 
       $('clockDate').textContent = WM.formatDay(st.time);
       $('clockHour').textContent = WM.formatHour(st.time);
       $('hourFill').style.width = `${((st.time % 1) * 100).toFixed(1)}%`;
 
       if (this.mapDirty) {
-        this.renderer.render(this.view, { planSide: st.plan ? st.plan.attacker : 0 });
+        this.renderer.render(this.view);
         this.mapDirty = false;
       }
       if (this.overlayDirty) {
         this.overlay.draw(this.view, {
           time: st.time,
           ops: war.ops,
-          planSide: st.side,
-          path: st.drawing || (st.plan ? st.plan.path : null),
-          drawing: !!st.drawing,
-          extensions: st.plan && !st.drawing ? st.plan.extensions : null,
-          planArrows: st.prep && modalOpen ? st.prep.arrows : null,
+          drawSide: st.side,
+          drawing: st.drawing,
+          plans: st.plans.map((e) => e.plan),
+          planArrows: modalOpen ? st.plans.filter((e) => e.prep).map((e) => ({ side: e.plan.attacker, arrows: e.prep.arrows })) : null,
           battles: this.smoothBattles(war.battles()),
           showLabels: st.showLabels,
           showProvinces: st.showProvinces,

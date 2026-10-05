@@ -71,11 +71,12 @@
         const age = st.time - op.t0;
         if (age < 18 && op.arrows) this.drawAxes(op.arrows, op.side, px, 1 - age / 18);
       }
-      if (st.planArrows) this.drawAxes(st.planArrows, st.planSide, px, 1);
-      if (st.path && st.path.length > 1) {
-        this.drawLine(st.path, st.planSide, px, st.drawing ? 'drawing' : 'plan');
-        for (const seg of st.extensions || []) this.drawLine(seg, st.planSide, px, 'extension');
+      for (const a of st.planArrows || []) this.drawAxes(a.arrows, a.side, px, 1);
+      for (const plan of st.plans || []) {
+        this.drawLine(plan.path, plan.attacker, px, 'plan');
+        for (const seg of plan.extensions || []) this.drawLine(seg, plan.attacker, px, 'extension');
       }
+      if (st.drawing && st.drawing.length > 1) this.drawLine(st.drawing, st.drawSide, px, 'drawing');
       if (st.showLabels) this.drawCities(view, px);
       if (st.battles) this.drawBattles(view, st.battles);
     }

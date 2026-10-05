@@ -48,16 +48,10 @@
         </button>
       </div>
       <p class="lede" id="planHint"></p>
-      <dl class="facts" id="planFacts" hidden>
-        <dt>Operation</dt><dd id="pfMode"></dd>
-        <dt>Objective</dt><dd id="pfArea"></dd>
-        <dt>Towns</dt><dd id="pfTowns"></dd>
-        <dt>Provinces</dt><dd id="pfProv"></dd>
-      </dl>
+      <ol class="plan-list" id="planList" aria-label="Planned lines" hidden></ol>
       <div class="actions" id="planActions" hidden>
         <button type="button" class="primary" id="btnAttack" disabled>Attack</button>
-        <button type="button" id="btnFlip" disabled title="Take the other side of your line">Flip objective</button>
-        <button type="button" id="btnClear" disabled>Clear</button>
+        <button type="button" id="btnClear" disabled>Clear all</button>
       </div>
       <footer class="cmd-foot">
         <label><input type="checkbox" id="optLabels" checked> Towns</label>
@@ -117,28 +111,9 @@
   <div class="modal" id="attackModal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="amTitle">
       <h2 id="amTitle">Operation</h2>
-      <p class="am-sub" id="amSub"></p>
-      <label class="am-label" for="troops">
-        <span>Troops committed</span>
-        <output id="troopsOut" for="troops">–</output>
-      </label>
-      <input type="range" id="troops" min="5000" max="100000" step="1000" value="50000">
-      <div class="am-scale" aria-hidden="true"><span>5,000</span><span id="troopsMax">–</span></div>
-      <label class="am-label" for="defense">
-        <span>Enemy defense strength</span>
-        <output id="defenseOut" for="defense">50</output>
-      </label>
-      <input type="range" id="defense" min="1" max="100" value="50">
-      <div class="am-scale" aria-hidden="true"><span>Militia</span><span>Fortified line</span></div>
-      <div class="am-tier"><span id="defenseTier">Regular army</span> <span class="am-def" id="amDefenders"></span></div>
-      <dl class="facts">
-        <dt>Force ratio</dt><dd id="amRatio"></dd>
-        <dt>Forecast</dt><dd id="amOutcome"></dd>
-        <dt>Expected end</dt><dd id="amEnd"></dd>
-        <dt>Our losses</dt><dd id="amLosses"></dd>
-        <dt>Enemy losses</dt><dd id="amEnemyLosses"></dd>
-      </dl>
-      <p class="am-note">The forecast assumes the enemy launches no offensive of its own here. Battles shift, stall and counter-attack, so the real outcome will differ.</p>
+      <div class="am-plans" id="amPlans"></div>
+      <p class="am-short" id="amShort" role="alert" hidden></p>
+      <p class="am-note">Each forecast assumes the enemy launches no offensive of its own there. Battles shift, stall and counter-attack, so the real outcome will differ.</p>
       <div class="actions">
         <button type="button" id="amCancel">Cancel</button>
         <button type="button" class="primary" id="amLaunch">Launch attack</button>

@@ -149,6 +149,27 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--brass); out
 .side[aria-pressed="true"][data-side="2"] { background: rgba(196, 49, 42, 0.2); border-color: var(--red); }
 
 .lede { margin: 0; opacity: 0.86; font-size: 13.5px; text-wrap: pretty; }
+
+.plan-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.plan {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--rule);
+  border-left-width: 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.plan[data-side="1"] { border-left-color: var(--blue); }
+.plan[data-side="2"] { border-left-color: var(--red); }
+.plan-text { display: flex; flex-direction: column; min-width: 0; }
+.plan-title { font-size: 13px; font-weight: 600; }
+.plan[data-side="1"] .plan-title { color: var(--blue-ink); }
+.plan[data-side="2"] .plan-title { color: var(--red-ink); }
+.plan-sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.plan button { width: 28px; height: 28px; padding: 0; font-size: 15px; line-height: 1; }
 .lede b { font-weight: 600; }
 
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
@@ -162,6 +183,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--brass); out
 #app[data-side="1"] .primary:hover:not(:disabled) { background: #4474f0; }
 #app[data-side="2"] .primary { background: var(--red); color: #fff; }
 #app[data-side="2"] .primary:hover:not(:disabled) { background: #d6443c; }
+/* the dialog can launch lines for both sides at once, so its button stays neutral */
+#app .modal-card .primary { background: var(--brass); color: #16110a; }
+#app .modal-card .primary:hover:not(:disabled) { background: #e8bb62; }
 
 .cmd-foot { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--rule); padding-top: 9px; font-size: 12.5px; color: var(--muted); }
 .cmd-foot label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
@@ -306,7 +330,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--brass); out
 /* ---------- Attack dialog ---------- */
 .modal { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(3, 4, 6, 0.45); padding: var(--gutter); overflow-y: auto; }
 .modal-card {
-  width: min(440px, 100%);
+  width: min(460px, 100%);
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
   background: var(--plate-solid);
   border: 1px solid var(--rule-strong);
   border-radius: 4px;
@@ -317,7 +343,18 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--brass); out
   gap: 9px;
 }
 .modal-card h2 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 25px; line-height: 1.1; text-wrap: balance; }
-.am-sub { margin: -4px 0 4px; color: var(--muted); font-size: 13px; }
+.am-sub { margin: -2px 0 2px; color: var(--muted); font-size: 13px; }
+.am-plans { display: flex; flex-direction: column; gap: 12px; }
+.am-plan { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px 12px; border: 1px solid var(--rule); border-left-width: 3px; border-radius: 3px; }
+.am-plan[data-side="1"] { border-left-color: var(--blue); }
+.am-plan[data-side="2"] { border-left-color: var(--red); }
+.am-op { margin: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-family: var(--font-display); font-weight: 400; font-size: 19px; }
+.am-side { font-family: var(--font-mono); font-size: 11.5px; }
+.am-plan[data-side="1"] .am-side { color: var(--blue-ink); }
+.am-plan[data-side="2"] .am-side { color: var(--red-ink); }
+.am-short { margin: 0; padding: 7px 10px; border-left: 3px solid var(--red); background: rgba(196, 49, 42, 0.12); font-size: 13px; }
+.o-tier { font-family: var(--font-display-sc); font-size: 17px; letter-spacing: 0.04em; color: var(--brass); }
+.facts dd.pending { color: var(--muted); }
 .am-label { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
 .am-label output { font-family: var(--font-mono); font-size: 20px; color: var(--paper); letter-spacing: 0; }
 .modal input[type="range"] { width: 100%; accent-color: var(--brass); margin: 0; }

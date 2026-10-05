@@ -317,8 +317,8 @@
       return op;
     }
 
-    nextName() {
-      return CODENAMES[this.counter % CODENAMES.length];
+    nextName(offset = 0) {
+      return CODENAMES[(this.counter + offset) % CODENAMES.length];
     }
 
     makeGroups(op, axes, deepest, t) {
@@ -885,7 +885,7 @@
   // it would go if the enemy launched nothing in the meantime. Runs in slices
   // so the page stays responsive.
   WM.Forecast = class Forecast {
-    constructor(war, plan, prep, troops, defense, t) {
+    constructor(war, plan, prep, troops, defense, t, defenders) {
       const world = war.world;
       let f = war.forecaster;
       if (!f) f = war.forecaster = new WM.War(world, { owner: new Uint8Array(world.N), quiet: true });
@@ -901,7 +901,7 @@
       this.op = f.launch(plan, prep, { troops, defense, t, name: 'forecast' });
       if (this.op) {
         // Match the defenders the real launch would get, given commitments elsewhere.
-        this.op.defPool = this.op.defPool0 = war.defendersFor(plan.enemy, WM.sectorDefenders(prep, defense));
+        this.op.defPool = this.op.defPool0 = defenders ?? war.defendersFor(plan.enemy, WM.sectorDefenders(prep, defense));
       }
       this.done = !this.op;
     }

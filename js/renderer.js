@@ -128,10 +128,9 @@ void main() {
 
   const FS_IRAN = COMMON + `
 uniform sampler2D u_own;   // per cell: 0 Blue ... 1 Red, including partial capture
-uniform sampler2D u_obj;   // r: Blue objectives, g: Red objectives, b: objective being planned
+uniform sampler2D u_obj;   // r/g: Blue/Red objectives under way, b/a: Blue/Red objectives planned
 uniform vec4 u_grid;       // grid origin x/y, cell size (world px)
 uniform vec2 u_gridSize;
-uniform int u_planSide;
 uniform vec3 u_blue;
 uniform vec3 u_red;
 uniform vec3 u_blueHi;
@@ -175,20 +174,19 @@ void main() {
 
   // Objectives still in enemy hands: Blue's hatched one way, Red's the other.
   vec4 ob = texture(u_obj, uv);
-  float b1 = ob.r + wob * 0.25, r1 = ob.g + wob * 0.25, p1 = ob.b + wob * 0.25;
+  float b1 = ob.r + wob * 0.25, r1 = ob.g + wob * 0.25;
+  float pb = ob.b + wob * 0.25, pr = ob.a + wob * 0.25;
   float blueObj = smoothstep(0.45, 0.55, b1) * red;
   float redObj = smoothstep(0.45, 0.55, r1) * (1.0 - red);
-  float enemyOfPlan = u_planSide == 2 ? 1.0 - red : red;
-  float planObj = smoothstep(0.45, 0.55, p1) * enemyOfPlan;
   col = mix(col, u_blueHi, blueObj * stripes(10.0, 1.0) * 0.26);
   col = mix(col, u_redHi, redObj * stripes(10.0, -1.0) * 0.26);
   col = mix(col, u_blueHi * 1.1, edgeOf(b1) * red * 0.55);
   col = mix(col, u_redHi * 1.1, edgeOf(r1) * (1.0 - red) * 0.55);
-  if (u_planSide > 0) {
-    vec3 pc = u_planSide == 2 ? u_redHi : u_blueHi;
-    col = mix(col, pc, planObj * stripes(7.0, 1.0) * 0.42);
-    col = mix(col, pc * 1.15, edgeOf(p1) * enemyOfPlan * 0.9);
-  }
+  // Lines planned but not yet launched: denser hatching and a bright edge.
+  col = mix(col, u_blueHi, smoothstep(0.45, 0.55, pb) * red * stripes(7.0, 1.0) * 0.42);
+  col = mix(col, u_blueHi * 1.15, edgeOf(pb) * red * 0.9);
+  col = mix(col, u_redHi, smoothstep(0.45, 0.55, pr) * (1.0 - red) * stripes(7.0, -1.0) * 0.42);
+  col = mix(col, u_redHi * 1.15, edgeOf(pr) * (1.0 - red) * 0.9);
   o = vec4(finish(col, w), 1.0);
 }`;
 
@@ -367,19 +365,22 @@ void main() {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.world.w, this.world.h, gl.RED, gl.UNSIGNED_BYTE, display);
     }
 
-    // Objectives of running offensives (by side) and of the plan being drawn.
-    setObjectives(ops, plan) {
+    // Objectives of running offensives and of planned lines, by side.
+    setObjectives(ops, plans) {
       const world = this.world, O = this.objData, w = world.w;
       O.fill(0);
       for (const op of ops) {
         const ch = op.side === WM.BLUE ? 0 : 1;
         for (const c of op.objCells) O[c * 4 + ch] = 255;
       }
-      if (plan) for (const c of plan.cells) O[c * 4 + 2] = 255;
+      for (const e of plans || []) {
+        const ch = e.plan.attacker === WM.BLUE ? 2 : 3;
+        for (const c of e.plan.cells) O[c * 4 + ch] = 255;
+      }
       const h = world.halo;
       for (let i = 0; i < h.length; i += 2) {
         const d = h[i] * 4, s = h[i + 1] * 4;
-        O[d] = O[s]; O[d + 1] = O[s + 1]; O[d + 2] = O[s + 2];
+        O[d] = O[s]; O[d + 1] = O[s + 1]; O[d + 2] = O[s + 2]; O[d + 3] = O[s + 3];
       }
       const gl = this.gl;
       gl.activeTexture(gl.TEXTURE5);
@@ -437,7 +438,7 @@ void main() {
       }
     }
 
-    render(view, sim) {
+    render(view) {
       const gl = this.gl;
       const W = this.canvas.width, H = this.canvas.height;
       gl.viewport(0, 0, W, H);
@@ -508,7 +509,6 @@ void main() {
       gl.uniform1i(u.u_obj, 5);
       gl.uniform4f(u.u_grid, world.x0, world.y0, world.cell, 0);
       gl.uniform2f(u.u_gridSize, world.w, world.h);
-      gl.uniform1i(u.u_planSide, sim.planSide || 0);
       gl.uniform3fv(u.u_blue, C.blue);
       gl.uniform3fv(u.u_red, C.red);
       gl.uniform3fv(u.u_blueHi, C.blueHi);
