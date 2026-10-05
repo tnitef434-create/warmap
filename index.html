@@ -6,15 +6,15 @@
 <title>Iran 1902 War Map</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IM+Fell+English&family=IM+Fell+English+SC&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IM+Fell+English&family=IM+Fell+English+SC&display=swap">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<div id="app">
+<div id="app" data-tab="command">
   <canvas id="map" aria-hidden="true"></canvas>
   <canvas id="overlay" aria-label="Map of Iran. Drag to draw an offensive, scroll to zoom." role="img"></canvas>
 
-  <header class="plate clock" id="clock">
+  <header class="plate clock ui" id="clock">
     <div class="clock-date" id="clockDate">Wednesday, 8 January 1902</div>
     <div class="clock-row">
       <span class="clock-hour" id="clockHour">00:00</span>
@@ -30,31 +30,23 @@
     <div class="clock-note" id="clockNote">1 hour = 10 s</div>
   </header>
 
-  <aside class="plate command" id="command" aria-label="Command">
-    <div class="brand">
-      <span class="brand-title">Iran · 1902</span>
-      <span class="brand-sub">Theatre of operations</span>
-    </div>
-
-    <div class="sides" role="group" aria-label="Side you command">
-      <button type="button" class="side" data-side="1" id="sideBlue" aria-pressed="false">
-        <span class="side-name">Blue</span>
-        <span class="side-area" id="areaBlue">–</span>
-        <span class="side-meta" id="metaBlue">–</span>
-      </button>
-      <button type="button" class="side" data-side="2" id="sideRed" aria-pressed="false">
-        <span class="side-name">Red</span>
-        <span class="side-area" id="areaRed">–</span>
-        <span class="side-meta" id="metaRed">–</span>
-      </button>
-    </div>
-    <div class="balance" aria-hidden="true"><i id="balBlue"></i><i id="balRed"></i></div>
-
-    <section class="panel" id="panelIdle">
-      <p class="lede">Pick the side you command for the next operation. You can switch sides between offensives.</p>
-    </section>
-
-    <section class="panel" id="panelPlan" hidden>
+  <div class="col col-left ui">
+    <section class="plate command" id="command" data-tab="command" aria-label="Command">
+      <div class="brand">
+        <span class="brand-title">Iran · 1902</span>
+        <span class="brand-sub">Theatre of operations</span>
+      </div>
+      <div class="eyebrow">Plan an offensive for</div>
+      <div class="sides" role="group" aria-label="Side to plan for">
+        <button type="button" class="side" data-side="1" id="sideBlue" aria-pressed="false">
+          <span class="side-name">Blue</span>
+          <span class="side-meta" id="readyBlue">–</span>
+        </button>
+        <button type="button" class="side" data-side="2" id="sideRed" aria-pressed="false">
+          <span class="side-name">Red</span>
+          <span class="side-meta" id="readyRed">–</span>
+        </button>
+      </div>
       <p class="lede" id="planHint"></p>
       <dl class="facts" id="planFacts" hidden>
         <dt>Operation</dt><dd id="pfMode"></dd>
@@ -62,68 +54,91 @@
         <dt>Towns</dt><dd id="pfTowns"></dd>
         <dt>Provinces</dt><dd id="pfProv"></dd>
       </dl>
-      <div class="actions">
+      <div class="actions" id="planActions" hidden>
         <button type="button" class="primary" id="btnAttack" disabled>Attack</button>
         <button type="button" id="btnFlip" disabled title="Take the other side of your line">Flip objective</button>
         <button type="button" id="btnClear" disabled>Clear</button>
       </div>
+      <footer class="cmd-foot">
+        <label><input type="checkbox" id="optLabels" checked> Towns</label>
+        <label><input type="checkbox" id="optProvinces" checked> Provinces</label>
+        <button type="button" class="link" id="btnReset">New war</button>
+      </footer>
     </section>
 
-    <section class="panel" id="panelOp" hidden>
-      <div class="op-title"><span class="pulse" aria-hidden="true"></span><span id="opTitle">Offensive</span></div>
-      <div class="progress" aria-hidden="true"><i id="opBar"></i></div>
-      <dl class="facts">
-        <dt>Taken</dt><dd id="opTaken"></dd>
-        <dt>Defense</dt><dd id="opDefense"></dd>
-        <dt>Running for</dt><dd id="opElapsed"></dd>
-        <dt>Expected end</dt><dd id="opEnd"></dd>
-      </dl>
-      <div class="actions">
-        <button type="button" id="btnHalt" title="Stop and keep the ground taken so far">Halt offensive</button>
+    <section class="plate ops" id="opsPlate" data-tab="ops" aria-label="Operations">
+      <h2 class="plate-title">Operations <span class="count" id="opsCount"></span></h2>
+      <ol class="op-list" id="opsList"></ol>
+      <p class="empty" id="opsEmpty">No offensives under way. Pick a side and draw a line into enemy land.</p>
+    </section>
+  </div>
+
+  <div class="col col-right ui">
+    <section class="plate forces" id="forces" data-tab="forces" aria-label="Forces">
+      <h2 class="plate-title">Forces</h2>
+      <div class="power" aria-label="Balance of power">
+        <div class="power-bar"><i id="powBlue"></i><i id="powRed"></i></div>
+        <div class="power-legend"><span id="powBlueTxt">Blue –</span><span>Power</span><span id="powRedTxt">– Red</span></div>
       </div>
+      <table class="ftable">
+        <thead><tr><th scope="col"></th><th scope="col" class="b">Blue</th><th scope="col" class="r">Red</th></tr></thead>
+        <tbody id="forcesBody"></tbody>
+      </table>
     </section>
 
-    <footer class="cmd-foot">
-      <label><input type="checkbox" id="optLabels" checked> Towns</label>
-      <label><input type="checkbox" id="optProvinces" checked> Provinces</label>
-      <button type="button" class="link" id="btnReset">New war</button>
-    </footer>
-  </aside>
+    <section class="plate diary" id="diary" data-tab="diary" aria-label="War diary">
+      <button type="button" class="diary-head" id="diaryToggle" aria-expanded="true" aria-controls="log">
+        <span>War diary</span><span class="count" id="diaryCount"></span>
+      </button>
+      <ol class="log" id="log"></ol>
+    </section>
+  </div>
 
-  <aside class="plate diary" id="diary" aria-label="War diary">
-    <button type="button" class="diary-head" id="diaryToggle" aria-expanded="true" aria-controls="log">
-      <span>War diary</span><span class="diary-count" id="diaryCount"></span>
-    </button>
-    <ol class="log" id="log"></ol>
-  </aside>
+  <nav class="tabs ui" id="tabs" aria-label="Panels">
+    <button type="button" data-tab="command">Command</button>
+    <button type="button" data-tab="ops">Operations <span class="badge" id="tabOps"></span></button>
+    <button type="button" data-tab="forces">Forces</button>
+    <button type="button" data-tab="diary">Diary</button>
+  </nav>
 
-  <div class="mapctl" role="group" aria-label="Zoom">
+  <div class="mapctl ui" role="group" aria-label="Map">
     <button type="button" id="zoomIn" title="Zoom in (+)" aria-label="Zoom in">+</button>
     <button type="button" id="zoomOut" title="Zoom out (−)" aria-label="Zoom out">−</button>
     <button type="button" id="zoomFit" title="Show all of Iran (F)" aria-label="Show all of Iran">⤢</button>
+    <button type="button" id="hideUi" title="Hide the interface (H)" aria-label="Hide the interface">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 20 20 4" stroke="currentColor" stroke-width="1.6"/></svg>
+    </button>
   </div>
+  <button type="button" class="show-ui" id="showUi" hidden>Show interface <kbd>H</kbd></button>
 
-  <div class="hint" id="hint"></div>
+  <div class="hint ui" id="hint"></div>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <div class="modal" id="attackModal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="amTitle">
-      <h2 id="amTitle">Offensive</h2>
+      <h2 id="amTitle">Operation</h2>
       <p class="am-sub" id="amSub"></p>
+      <label class="am-label" for="troops">
+        <span>Troops committed</span>
+        <output id="troopsOut" for="troops">–</output>
+      </label>
+      <input type="range" id="troops" min="5000" max="100000" step="1000" value="50000">
+      <div class="am-scale" aria-hidden="true"><span>5,000</span><span id="troopsMax">–</span></div>
       <label class="am-label" for="defense">
         <span>Enemy defense strength</span>
         <output id="defenseOut" for="defense">50</output>
       </label>
       <input type="range" id="defense" min="1" max="100" value="50">
       <div class="am-scale" aria-hidden="true"><span>Militia</span><span>Fortified line</span></div>
-      <div class="am-tier" id="defenseTier">Regular army</div>
+      <div class="am-tier"><span id="defenseTier">Regular army</span> <span class="am-def" id="amDefenders"></span></div>
       <dl class="facts">
-        <dt>Estimated duration</dt><dd id="amDuration"></dd>
-        <dt>Expected completion</dt><dd id="amEnd"></dd>
-        <dt>Rate of advance</dt><dd id="amRate"></dd>
-        <dt>Spearheads</dt><dd id="amAxes"></dd>
+        <dt>Force ratio</dt><dd id="amRatio"></dd>
+        <dt>Forecast</dt><dd id="amOutcome"></dd>
+        <dt>Expected end</dt><dd id="amEnd"></dd>
+        <dt>Our losses</dt><dd id="amLosses"></dd>
+        <dt>Enemy losses</dt><dd id="amEnemyLosses"></dd>
       </dl>
-      <p class="am-note">Stronger defenses slow the whole front. Mountains, rivers and towns slow it further; spearheads break through faster.</p>
+      <p class="am-note">The forecast assumes the enemy launches no offensive of its own here. Battles shift, stall and counter-attack, so the real outcome will differ.</p>
       <div class="actions">
         <button type="button" id="amCancel">Cancel</button>
         <button type="button" class="primary" id="amLaunch">Launch attack</button>

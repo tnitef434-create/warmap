@@ -24,7 +24,9 @@
       this.iran = toPath(geo.iran, true);
       this.borders = toPath(geo.borders, false);
       this.provinceLines = toPath(geo.provinceLines, false);
-      this.labelFont = getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim() || 'sans-serif';
+      const css = getComputedStyle(document.documentElement);
+      this.labelFont = css.getPropertyValue('--font-ui').trim() || 'sans-serif';
+      this.numberFont = css.getPropertyValue('--font-numbers').trim() || this.labelFont;
     }
 
     resize(cssW, cssH, dpr) {
@@ -63,12 +65,23 @@
       ctx.lineWidth = 1.35 * px;
       ctx.stroke(this.iran);
 
-      if (st.axes) this.drawAxes(st.axes, st.attacker, px, st.axesAlpha ?? 1);
-      if (st.path && st.path.length > 1) this.drawPath(st.path, st.attacker, px, st.pathStyle, st.extensions);
+      for (const op of st.ops || []) {
+        this.drawLine(op.path, op.side, px, 'objective');
+        for (const seg of op.extensions || []) this.drawLine(seg, op.side, px, 'objective');
+        const age = st.time - op.t0;
+        if (age < 18 && op.arrows) this.drawAxes(op.arrows, op.side, px, 1 - age / 18);
+      }
+      if (st.planArrows) this.drawAxes(st.planArrows, st.planSide, px, 1);
+      if (st.path && st.path.length > 1) {
+        this.drawLine(st.path, st.planSide, px, st.drawing ? 'drawing' : 'plan');
+        for (const seg of st.extensions || []) this.drawLine(seg, st.planSide, px, 'extension');
+      }
       if (st.showLabels) this.drawCities(view, px);
+      if (st.battles) this.drawBattles(view, st.battles);
     }
 
-    drawPath(path, side, px, style, extensions) {
+    drawLine(path, side, px, style) {
+      if (!path || path.length < 2) return;
       const ctx = this.ctx;
       const col = side === WM.RED ? '255, 120, 105' : '125, 170, 255';
       const trace = () => {
@@ -76,30 +89,68 @@
         ctx.moveTo(path[0][0], path[0][1]);
         for (let i = 1; i < path.length; i++) ctx.lineTo(path[i][0], path[i][1]);
       };
-      const faint = style === 'objective';
+      const faint = style === 'objective' || style === 'extension';
+      if (!faint) {
+        trace();
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+        ctx.lineWidth = 4.6 * px;
+        ctx.stroke();
+      }
       trace();
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
-      ctx.lineWidth = (faint ? 3 : 5) * px;
-      ctx.stroke();
-      trace();
-      ctx.setLineDash(faint ? [6 * px, 5 * px] : []);
-      ctx.strokeStyle = `rgba(${col}, ${faint ? 0.75 : 1})`;
-      ctx.lineWidth = (faint ? 1.5 : 2.6) * px;
+      ctx.setLineDash(style === 'objective' ? [5 * px, 5 * px] : style === 'extension' ? [3 * px, 4 * px] : []);
+      ctx.strokeStyle = `rgba(${col}, ${style === 'objective' ? 0.6 : style === 'extension' ? 0.75 : 1})`;
+      ctx.lineWidth = (faint ? 1.4 : style === 'drawing' ? 2.2 : 2.4) * px;
       ctx.stroke();
       ctx.setLineDash([]);
-      if (extensions && !faint) {
-        ctx.setLineDash([3 * px, 4 * px]);
-        ctx.strokeStyle = `rgba(${col}, 0.7)`;
-        ctx.lineWidth = 1.4 * px;
-        const { x0, y0, cell } = this.world;
-        for (const [a, b] of extensions) {
-          ctx.beginPath();
-          ctx.moveTo(x0 + a[0] * cell, y0 + a[1] * cell);
-          ctx.lineTo(x0 + b[0] * cell, y0 + b[1] * cell);
-          ctx.stroke();
+    }
+
+    // Men engaged on each side of every battle, set on either side of the
+    // front in big numerals: the attacker's on his side, the defender's on
+    // the other. Labels of neighbouring battles are nudged apart.
+    drawBattles(view, battles) {
+      const ctx = this.ctx;
+      const { dpr } = view;
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const size = view.w < 700 ? 20 : 27;
+      ctx.font = `700 ${size}px ${this.numberFont}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      const placed = [];
+      const hits = (b) => placed.some((p) => b[0] < p[2] && b[2] > p[0] && b[1] < p[3] && b[3] > p[1]);
+      for (const b of battles) {
+        const sx = (b.at[0] - view.x0) * view.scale, sy = (b.at[1] - view.y0) * view.scale;
+        if (sx < -300 || sy < -300 || sx > view.w + 300 || sy > view.h + 300) continue;
+        const [dx, dy] = b.dir;
+        const texts = [Math.max(0, b.attackers).toLocaleString('en-US'), Math.max(0, b.defenders).toLocaleString('en-US')];
+        const widths = texts.map((t) => ctx.measureText(t).width);
+        // distance from the front so each number clears it, whatever the front's angle
+        const off = widths.map((tw) => 0.5 * (Math.abs(dx) * tw + Math.abs(dy) * size) + 7);
+        let shift = 0, boxes;
+        for (let tries = 0; tries < 5; tries++) {
+          const px = -dy * shift, py = dx * shift;
+          boxes = [-1, 1].map((k, i) => {
+            const x = sx + px + dx * off[i] * k, y = sy + py + dy * off[i] * k;
+            return [x - widths[i] / 2 - 3, y - size / 2 - 2, x + widths[i] / 2 + 3, y + size / 2 + 2, x, y];
+          });
+          if (!boxes.some(hits)) break;
+          shift = (tries % 2 ? -1 : 1) * (Math.floor(tries / 2) + 1) * size * 0.9;
         }
-        ctx.setLineDash([]);
+        boxes.forEach((bx, i) => {
+          placed.push(bx);
+          const [, , , , x, y] = bx;
+          ctx.lineWidth = 5;
+          ctx.strokeStyle = 'rgba(8, 10, 14, 0.5)';
+          ctx.strokeText(texts[i], x + 1, y + 2);
+          ctx.lineWidth = 3.2;
+          ctx.strokeStyle = 'rgba(8, 10, 14, 0.92)';
+          ctx.strokeText(texts[i], x, y);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(texts[i], x, y);
+        });
       }
+      ctx.restore();
     }
 
     // Spearheads drawn as tapered arrows, the way staff maps show them.
@@ -160,6 +211,14 @@
         ctx.lineWidth = 1.2 * px;
         ctx.strokeStyle = 'rgba(0,0,0,0.75)';
         ctx.stroke();
+        if (c.orig && owner !== c.orig) {
+          // occupied town: ringed in white
+          ctx.beginPath();
+          ctx.rect(x - 4.6 * px, y - 4.6 * px, 9.2 * px, 9.2 * px);
+          ctx.lineWidth = 1.1 * px;
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.stroke();
+        }
         ctx.lineWidth = 3 * px;
         ctx.strokeStyle = 'rgba(5, 8, 14, 0.8)';
         ctx.strokeText(c.name, x + 6 * px, y);

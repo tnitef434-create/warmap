@@ -37,6 +37,7 @@ uniform sampler2D u_detail;
 uniform vec2 u_reliefTexels;  // relief texture size in texels
 uniform float u_magnified;    // 1 when relief texels are larger than a screen pixel
 uniform float u_detailAmp;
+uniform float u_deep;        // 0..1, how far beyond the relief's own resolution we are zoomed
 out vec4 o;
 
 vec2 worldPos() {
@@ -78,7 +79,8 @@ float relief(vec2 w) {
 float detail(vec2 w) {
   float a = texture(u_detail, w / 46.0).r - 0.5;
   float b = texture(u_detail, w / 12.5 + 0.31).r - 0.5;
-  return (a * 0.85 + b * 0.5) * u_detailAmp;
+  float c = texture(u_detail, w / 3.3 + 0.77).r - 0.5;
+  return (a * 0.85 + b * 0.5 + c * 0.35) * u_detailAmp;
 }
 vec3 finish(vec3 c, vec2 w) {
   vec2 uv = gl_FragCoord.xy / u_res;
@@ -118,81 +120,74 @@ void main() {
   const FS_LAND = COMMON + `
 void main() {
   vec2 w = worldPos();
-  float s = relief(w) + detail(w) * 0.5;
+  float s = relief(w) * (1.0 - 0.35 * u_deep) + detail(w) * 0.5;
   vec3 base = vec3(0.150, 0.152, 0.158);
   vec3 col = base * clamp(1.0 + 0.62 * s, 0.35, 1.9);
   o = vec4(finish(col, w), 1.0);
 }`;
 
   const FS_IRAN = COMMON + `
-uniform highp sampler2D u_field;   // per cell: arrival time, base owner (1 = red), cell crossing time, objective flag
-uniform vec4 u_grid;               // grid origin x/y, cell size (world px)
-uniform ivec2 u_gridSize;
-uniform float u_time;              // simulation hours
-uniform int u_attacker;            // 0 none, 1 blue, 2 red
-uniform float u_showTarget;
+uniform sampler2D u_own;   // per cell: 0 Blue ... 1 Red, including partial capture
+uniform sampler2D u_obj;   // r: Blue objectives, g: Red objectives, b: objective being planned
+uniform vec4 u_grid;       // grid origin x/y, cell size (world px)
+uniform vec2 u_gridSize;
+uniform int u_planSide;
 uniform vec3 u_blue;
 uniform vec3 u_red;
 uniform vec3 u_blueHi;
 uniform vec3 u_redHi;
-
-vec4 cellState(ivec2 c) {
-  c = clamp(c, ivec2(0), u_gridSize - 1);
-  vec4 f = texelFetch(u_field, c, 0);
-  float s = clamp((u_time - f.x) / f.z + 0.5, 0.0, 1.0);
-  float red = f.y > 0.5 ? 1.0 - s : s;
-  float since = u_time - f.x;
-  float fresh = f.w > 0.5 && since > 0.0 ? exp(-since / 14.0) : 0.0;
-  float fight = f.w > 0.5 ? exp(-abs(since) / (1.5 * f.z + 0.6)) : 0.0;
-  return vec4(red, f.w, fresh, fight);
-}
 
 vec3 tint(vec3 base, float s) {
   float l = clamp(0.80 + 0.46 * s, 0.22, 1.7);
   vec3 c = base * l;
   return c + max(l - 1.0, 0.0) * 0.30 * vec3(1.0);
 }
+float stripes(float width, float dir) {
+  float v = (gl_FragCoord.x + dir * gl_FragCoord.y) / (width * u_dpr);
+  return smoothstep(0.32, 0.5, abs(fract(v) - 0.5) * 2.0);
+}
+float edgeOf(float v) {
+  float a = fwidth(v) * 1.6 + 1e-4;
+  return 1.0 - smoothstep(0.0, a, abs(v - 0.5));
+}
 
 void main() {
   vec2 w = worldPos();
-  vec2 g = (w - u_grid.xy) / u_grid.z - 0.5;
-  vec2 fl = floor(g);
-  vec2 fr = g - fl;
-  ivec2 i0 = ivec2(fl);
-  vec4 a = cellState(i0), b = cellState(i0 + ivec2(1, 0));
-  vec4 c = cellState(i0 + ivec2(0, 1)), d = cellState(i0 + ivec2(1, 1));
-  vec4 v = mix(mix(a, b, fr.x), mix(c, d, fr.x), fr.y);
+  // Domain warp: sampling the ownership grid through a fractal offset breaks
+  // up the ~2 km cell geometry when zoomed far in.
+  vec2 warp = vec2(texture(u_detail, w / 9.0).r, texture(u_detail, w / 9.0 + 0.37).r) - 0.5;
+  warp += 0.5 * (vec2(texture(u_detail, w / 2.6 + 0.11).r, texture(u_detail, w / 2.6 + 0.63).r) - 0.5);
+  vec2 uv = ((w - u_grid.xy) / u_grid.z + warp * 1.1) / u_gridSize;
+  float r = texture(u_own, uv).r;
 
-  // Organic, slightly fractal edge instead of a smooth bilinear contour.
-  float wob = (texture(u_detail, w / 21.0).r - 0.5) * 0.55 + (texture(u_detail, w / 5.3 + 0.5).r - 0.5) * 0.3;
-  float r = v.x + wob * 0.55;
-  float aa = fwidth(r) * 0.85 + 1e-4;
-  float red = smoothstep(0.5 - aa, 0.5 + aa, r);
+  // Organic, fractal edge at every zoom level instead of a smooth contour.
+  float wob = (texture(u_detail, w / 21.0).r - 0.5) * 0.5
+            + (texture(u_detail, w / 5.3 + 0.5).r - 0.5) * 0.28
+            + (texture(u_detail, w / 1.35 + 0.21).r - 0.5) * 0.16;
+  float rr = r + wob * 0.55;
+  float aa = fwidth(rr) * 0.85 + 1e-4;
+  float red = smoothstep(0.5 - aa, 0.5 + aa, rr);
 
-  float s = relief(w) + detail(w) * 0.55;
+  float s = relief(w) * (1.0 - 0.35 * u_deep) + detail(w) * 0.55;
   vec3 col = mix(tint(u_blue, s), tint(u_red, s), red);
-
-  // Thin shadowed seam along the front.
-  float seam = 1.0 - smoothstep(0.0, aa * 2.4, abs(r - 0.5));
+  float seam = 1.0 - smoothstep(0.0, aa * 2.4, abs(rr - 0.5));
   col *= 1.0 - 0.38 * seam;
 
-  vec3 att = u_attacker == 2 ? u_redHi : u_blueHi;
-  if (u_attacker > 0) {
-    // Newly taken ground glows faintly; the active front flickers with fire.
-    float own = u_attacker == 2 ? red : 1.0 - red;
-    col += att * 0.10 * v.z * own;
-    float flick = 0.55 + 0.45 * sin(u_time * 9.0 + hash(floor(w / 3.0)) * 40.0);
-    float band = 1.0 - smoothstep(0.0, aa * 9.0 + 0.04, abs(r - 0.5));
-    col += vec3(1.0, 0.62, 0.25) * v.w * band * flick * 0.55;
-
-    // Objective still to be taken: hatched in the attacker's colour.
-    float t = v.y + wob * 0.3;
-    float aat = fwidth(t) * 0.85 + 1e-4;
-    float tgt = smoothstep(0.5 - aat, 0.5 + aat, t) * (1.0 - own);
-    float stripe = smoothstep(0.35, 0.5, abs(fract((gl_FragCoord.x + gl_FragCoord.y) / (9.0 * u_dpr)) - 0.5) * 2.0);
-    col = mix(col, att, tgt * stripe * 0.36 * u_showTarget);
-    float outline = 1.0 - smoothstep(0.0, aat * 2.0, abs(t - 0.5));
-    col = mix(col, att * 1.15, outline * (1.0 - own) * 0.85 * u_showTarget);
+  // Objectives still in enemy hands: Blue's hatched one way, Red's the other.
+  vec4 ob = texture(u_obj, uv);
+  float b1 = ob.r + wob * 0.25, r1 = ob.g + wob * 0.25, p1 = ob.b + wob * 0.25;
+  float blueObj = smoothstep(0.45, 0.55, b1) * red;
+  float redObj = smoothstep(0.45, 0.55, r1) * (1.0 - red);
+  float enemyOfPlan = u_planSide == 2 ? 1.0 - red : red;
+  float planObj = smoothstep(0.45, 0.55, p1) * enemyOfPlan;
+  col = mix(col, u_blueHi, blueObj * stripes(10.0, 1.0) * 0.26);
+  col = mix(col, u_redHi, redObj * stripes(10.0, -1.0) * 0.26);
+  col = mix(col, u_blueHi * 1.1, edgeOf(b1) * red * 0.55);
+  col = mix(col, u_redHi * 1.1, edgeOf(r1) * (1.0 - red) * 0.55);
+  if (u_planSide > 0) {
+    vec3 pc = u_planSide == 2 ? u_redHi : u_blueHi;
+    col = mix(col, pc, planObj * stripes(7.0, 1.0) * 0.42);
+    col = mix(col, pc * 1.15, edgeOf(p1) * enemyOfPlan * 0.9);
   }
   o = vec4(finish(col, w), 1.0);
 }`;
@@ -341,61 +336,55 @@ void main() {
           gl.texParameterf(gl.TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, max));
         }
       }
-      this.texField = tex(3, () => {
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const gridTex = (unit) => tex(unit, () => {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       });
+      this.texOwn = gridTex(3);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, world.w, world.h, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+      this.texObj = gridTex(5);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, world.w, world.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       this.texGlow = tex(4, () => {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       });
-      this.fieldData = new Float32Array(world.N * 4);
+      this.objData = new Uint8Array(world.N * 4);
       this.glowScale = 4;
       this.glowW = Math.ceil(world.w / this.glowScale);
       this.glowH = Math.ceil(world.h / this.glowScale);
     }
 
-    // Upload ownership for the current state, optionally with an offensive
-    // (op) or a planned objective (plan) layered on top.
-    setField(op, plan) {
-      const world = this.world;
-      const { N, owner, nearest } = world;
-      const F = this.fieldData;
-      const objective = op ? op.plan.mask : plan ? plan.mask : null;
-      const base = op ? op.baseOwner : owner;
-      for (let c = 0; c < N; c++) {
-        const k = c * 4;
-        F[k] = 1e9;
-        F[k + 1] = base[c] === WM.RED ? 1 : 0;
-        F[k + 2] = 1;
-        F[k + 3] = objective && objective[c] ? 1 : 0;
-      }
-      if (op) {
-        for (let i = 0; i < op.cells.length; i++) {
-          const k = op.cells[i] * 4;
-          F[k] = op.T[i] - op.t0;
-          F[k + 2] = Math.max(op.tau[i], 0.05);
-        }
-        this.fieldEpoch = op.t0;
-      } else {
-        this.fieldEpoch = 0;
-      }
-      // carry values a little past the coastline / borders
-      for (let c = 0; c < N; c++) {
-        const src = nearest[c];
-        if (src >= 0 && src !== c) {
-          const k = c * 4, s = src * 4;
-          F[k] = F[s]; F[k + 1] = F[s + 1]; F[k + 2] = F[s + 2]; F[k + 3] = F[s + 3];
-        }
-      }
+    // Ownership per cell, 0 Blue … 255 Red (partial values while a cell is
+    // being taken).
+    setOwnership(display) {
       const gl = this.gl;
       gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, this.texField);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, world.w, world.h, 0, gl.RGBA, gl.FLOAT, F);
+      gl.bindTexture(gl.TEXTURE_2D, this.texOwn);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.world.w, this.world.h, gl.RED, gl.UNSIGNED_BYTE, display);
+    }
+
+    // Objectives of running offensives (by side) and of the plan being drawn.
+    setObjectives(ops, plan) {
+      const world = this.world, O = this.objData, w = world.w;
+      O.fill(0);
+      for (const op of ops) {
+        const ch = op.side === WM.BLUE ? 0 : 1;
+        for (const c of op.objCells) O[c * 4 + ch] = 255;
+      }
+      if (plan) for (const c of plan.cells) O[c * 4 + 2] = 255;
+      const h = world.halo;
+      for (let i = 0; i < h.length; i += 2) {
+        const d = h[i] * 4, s = h[i + 1] * 4;
+        O[d] = O[s]; O[d + 1] = O[s + 1]; O[d + 2] = O[s + 2];
+      }
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, this.texObj);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, world.h, gl.RGBA, gl.UNSIGNED_BYTE, O);
     }
 
     // Coastal glow: blurred, low-resolution copy of the current ownership.
@@ -491,7 +480,8 @@ void main() {
         gl.uniform1i(u.u_detail, 1);
         gl.uniform2fv(u.u_reliefTexels, this.reliefTexels);
         gl.uniform1f(u.u_magnified, texelPx > 1.15 ? 1 : 0);
-        gl.uniform1f(u.u_detailAmp, 0.55 + 0.9 * WM.smoothstep(1, 5, texelPx));
+        gl.uniform1f(u.u_detailAmp, 0.55 + 0.9 * WM.smoothstep(1, 5, texelPx) + 0.6 * WM.smoothstep(6, 24, texelPx));
+        gl.uniform1f(u.u_deep, WM.smoothstep(5, 20, texelPx));
         return u;
       };
       const C = WM.COLORS;
@@ -514,12 +504,11 @@ void main() {
 
       // 4) Iran
       u = common(this.progIran);
-      gl.uniform1i(u.u_field, 3);
+      gl.uniform1i(u.u_own, 3);
+      gl.uniform1i(u.u_obj, 5);
       gl.uniform4f(u.u_grid, world.x0, world.y0, world.cell, 0);
-      gl.uniform2i(u.u_gridSize, world.w, world.h);
-      gl.uniform1f(u.u_time, sim.time - this.fieldEpoch);
-      gl.uniform1i(u.u_attacker, sim.attacker || 0);
-      gl.uniform1f(u.u_showTarget, sim.showTarget ? 1 : 0);
+      gl.uniform2f(u.u_gridSize, world.w, world.h);
+      gl.uniform1i(u.u_planSide, sim.planSide || 0);
       gl.uniform3fv(u.u_blue, C.blue);
       gl.uniform3fv(u.u_red, C.red);
       gl.uniform3fv(u.u_blueHi, C.blueHi);

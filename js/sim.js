@@ -1,11 +1,13 @@
-// Offensive simulation.
+// Battle simulation.
 //
-// Every objective cell gets a local rate of advance from terrain roughness,
-// rivers, towns, defensive belts, spearhead axes and random sector strength.
-// A fast-marching (Eikonal) solve then gives the hour at which the front
-// reaches each cell. The renderer thresholds those arrival times against the
-// clock every frame, so the front moves continuously, stalls in the
-// mountains, flows around towns and races down the spearhead corridors.
+// Ownership changes cell by cell (~2 km). Each offensive is an army with a
+// number of men, split between holding troops spread along the whole front
+// and a few battle groups that concentrate on narrow sectors. Where a battle
+// group presses, the front breaks; elsewhere it barely moves. The defender
+// brings up reserves against each thrust, so groups stall and shift their
+// effort, and defenders counter-attack the flanks of salients. Several
+// offensives by both sides can run at once; where they meet head-on the
+// stronger side pushes. Cut-off pockets lose supply and surrender.
 (function (WM) {
   'use strict';
   const { clamp, smoothstep } = WM;
@@ -18,44 +20,61 @@
     [101, 'Fortified line'],
   ];
   WM.defenseTier = (d) => WM.DEFENSE_TIERS.find(([max]) => d < max)[1];
+  // Defenders per km of front for a defense strength of 1-100.
+  WM.defenseDensity = (d) => 14 * Math.exp(0.03 * d);
+  WM.START_ARMY = [0, 260000, 150000];
+  WM.START_MORALE = [0, 0.8, 0.88];
 
-  // Rate of advance on open ground (km/h) against a defense of strength 1-100.
-  WM.baseSpeed = (defense) => 9 * Math.exp(-0.0275 * defense);
+  const VMAX = 9;          // km/h, unopposed advance over open ground
+  const VMAX_CAP = 5;      // km/h, fastest any sector can move (cavalry pace)
+  const STEP = 0.1;        // h, longest simulation sub-step
+  const HOLD_SHARE = 0.3;  // share of an offensive's men holding the wider front
+  const LOSS_RATE = 0.0011;
+  const KILLED_SHARE = 0.3;
+  const CODENAMES = ['Rostam', 'Simurgh', 'Kaveh', 'Arash', 'Sohrab', 'Damavand', 'Esfandiar', 'Zagros', 'Anahita',
+    'Bahram', 'Alborz', 'Karun', 'Fereydun', 'Siavash', 'Gordafarid', 'Jamshid', 'Mithra', 'Tahmineh', 'Kay Khosrow',
+    'Bijan', 'Manuchehr', 'Garshasp', 'Rudaba', 'Zal', 'Giv', 'Gudarz', 'Babak', 'Shirin', 'Farhad', 'Tus'];
+  const NB = [[-1, -1, 0.7], [0, -1, 1], [1, -1, 0.7], [-1, 0, 1], [1, 0, 1], [-1, 1, 0.7], [0, 1, 1], [1, 1, 0.7]];
+  const WEIGHTS = Float32Array.from(NB.map((n) => n[2]));
 
-  // Builds the defense-independent part of an offensive: speed factors and
-  // reference arrival times (hours at a base speed of 1 km/h).
+  // ---------------------------------------------------------------------------
+  // Planning: spearhead axes, defensive belts and static attack weights.
   WM.prepareOperation = function (world, plan, seed) {
-    const { w, h, N, owner, rug, river, rowKm, kmAvg } = world;
-    const { cells, mask, attacker, D } = plan;
-    const n = cells.length;
+    const { w, owner, kmAvg } = world;
+    const { cells, attacker, D } = plan;
     const rand = WM.rng(seed);
-    const nzA = WM.makeNoise(seed), nzB = WM.makeNoise(seed ^ 0x5bd1e995), nzC = WM.makeNoise(seed + 977);
 
-    let Dmax = 0;
-    for (let k = 0; k < n; k++) Dmax = Math.max(Dmax, D[cells[k]]);
+    let x0 = w, y0 = world.h, x1 = 0, y1 = 0, Dmax = 0, deepest = cells[0];
+    for (const c of cells) {
+      const x = c % w, y = (c - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (D[c] > Dmax) { Dmax = D[c]; deepest = c; }
+    }
+    const bbox = { x0, y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
     const DmaxKm = Math.max(1, Dmax * kmAvg);
 
-    // Jump-off cells: objective cells touching our lines.
     const seeds = [];
-    for (let k = 0; k < n; k++) {
-      const c = cells[k], x = c % w;
+    for (const c of cells) {
+      const x = c % w;
       if ((x > 0 && owner[c - 1] === attacker) || (x < w - 1 && owner[c + 1] === attacker) ||
-        (c >= w && owner[c - w] === attacker) || (c < N - w && owner[c + w] === attacker)) seeds.push(c);
+        owner[c - w] === attacker || owner[c + w] === attacker) seeds.push(c);
     }
+    const xy = (c) => [(c % w) + 0.5, Math.floor(c / w) + 0.5];
 
-    // Spearhead axes (Schwerpunkte): fast corridors from the front towards the
-    // depth of the objective.
+    // Battle groups start on the front and drive into the depth.
     const axes = [];
-    if (seeds.length && DmaxKm > 25) {
+    if (seeds.length) {
       const frontKm = seeds.length * kmAvg;
-      const nAxes = clamp(Math.round(frontKm / 320 + rand() * 1.4), 1, 4);
+      const nAxes = DmaxKm < 20 ? 1 : clamp(Math.round(frontKm / 260 + rand() * 1.5), 1, 4);
       const deep = [];
-      for (let k = 0; k < n; k++) if (D[cells[k]] >= 0.72 * Dmax) deep.push(cells[k]);
-      const xy = (c) => [c % w + 0.5, Math.floor(c / w) + 0.5];
+      for (const c of cells) if (D[c] >= 0.65 * Dmax) deep.push(c);
       const starts = [seeds[Math.floor(rand() * seeds.length)]];
       while (starts.length < nAxes) {
-        let best = -1, bestD = -1;
-        for (let t = 0; t < 400; t++) {
+        let best = seeds[0], bestD = -1;
+        for (let t = 0; t < 300; t++) {
           const s = seeds[Math.floor(rand() * seeds.length)];
           const [sx, sy] = xy(s);
           let md = Infinity;
@@ -66,7 +85,7 @@
       }
       for (const s of starts) {
         const [sx, sy] = xy(s);
-        let e = deep[0], bestScore = Infinity;
+        let e = deep.length ? deep[0] : deepest, bestScore = Infinity;
         for (let t = 0; t < Math.min(deep.length, 1500); t++) {
           const cand = deep[Math.floor(rand() * deep.length)];
           const [cx, cy] = xy(cand);
@@ -74,249 +93,849 @@
           if (score < bestScore) { bestScore = score; e = cand; }
         }
         const [ex, ey] = xy(e);
-        if (Math.hypot(ex - sx, ey - sy) < 4) continue;
-        axes.push({ sx, sy, ex, ey, strength: 0.9 + 1.4 * rand(), width: (8 + 14 * rand()) / kmAvg });
+        axes.push({ sx, sy, ex, ey, strength: 0.7 + 1.0 * rand(), width: (9 + 10 * rand()) / kmAvg });
       }
     }
-
-    // Prepared defensive belts at some depth behind the enemy front.
     const belts = [];
     if (DmaxKm > 60) {
       const r = rand(), nBelts = r < 0.3 ? 0 : r < 0.75 ? 1 : 2;
       for (let i = 0; i < nBelts; i++) belts.push({ depth: DmaxKm * (0.28 + 0.45 * rand()), width: 2.5 + 2 * rand() });
     }
+    const att = WM.attackWeights(world, bbox, cells, axes, belts, seed, D, DmaxKm);
+    const toWorld = (gx, gy) => [world.x0 + gx * world.cell, world.y0 + gy * world.cell];
+    return {
+      seed, bbox, att, axes, belts, depthMaxKm: DmaxKm, deepest,
+      frontKm0: Math.max(seeds.length * kmAvg * 0.7, 20),
+      arrows: axes.map((a) => ({ from: toWorld(a.sx, a.sy), to: toWorld(a.ex, a.ey) })),
+    };
+  };
 
-    // Towns hold out: strong slowdown around each city, scaled by its size.
-    const cityF = new Float32Array(N).fill(1);
-    for (const city of world.cities) {
-      if (!mask[city.cell]) {
-        // still let nearby objective cells feel a town just outside the objective
-        let near = false;
-        const cx = city.cell % w, cy = Math.floor(city.cell / w);
-        for (let d = -6; d <= 6 && !near; d += 3) for (let e = -6; e <= 6 && !near; e += 3) {
-          const nc = (cy + d) * w + cx + e;
-          if (nc >= 0 && nc < N && mask[nc]) near = true;
-        }
-        if (!near) continue;
-      }
-      const imp = city.importance;
-      const S = 0.45 + 0.3 * imp, rKm = 4 + 10 * imp, rc = rKm / kmAvg;
-      const cx = city.cell % w, cy = Math.floor(city.cell / w);
-      const R = Math.ceil(rc * 2.5);
-      for (let y = Math.max(0, cy - R); y <= Math.min(h - 1, cy + R); y++) {
-        for (let x = Math.max(0, cx - R); x <= Math.min(w - 1, cx + R); x++) {
-          const c = y * w + x;
-          if (!mask[c]) continue;
-          const d2 = ((x - cx) ** 2 + (y - cy) ** 2) / (rc * rc);
-          cityF[c] *= 1 - S * Math.exp(-d2);
-        }
-      }
-    }
-
-    const f = new Float32Array(N);
-    const fList = new Float32Array(n);
-    for (let k = 0; k < n; k++) {
-      const c = cells[k], x = c % w, y = (c - x) / w;
-      const X = x * kmAvg, Y = y * kmAvg;
-      const Dkm = D[c] * kmAvg;
-
-      const terrain = 1.12 - 0.72 * Math.pow(rug[c] / 255, 0.85);
-      let rv = river[c];
-      if (x > 0) rv = Math.max(rv, river[c - 1]);
-      if (x < w - 1) rv = Math.max(rv, river[c + 1]);
-      if (c >= w) rv = Math.max(rv, river[c - w]);
-      if (c < N - w) rv = Math.max(rv, river[c + w]);
-      const riverF = 1 - 0.8 * (rv / 255);
-      const sector = Math.exp(0.6 * nzA.fbm(X / 170, Y / 170, 3) + 0.3 * nzB.fbm(X / 48, Y / 48, 2));
-
-      let axisF = 1;
+  // Per-cell multiplier on attack strength: sector strength, defensive belts,
+  // break-in difficulty at the old front and exhaustion with depth.
+  WM.attackWeights = function (world, bbox, cells, axes, belts, seed, D, DmaxKm) {
+    const { w, kmAvg } = world;
+    const att = new Float32Array(bbox.w * bbox.h);
+    const nz = WM.makeNoise(seed), nzC = WM.makeNoise(seed + 977);
+    for (const c of cells) {
+      const x = c % w, y = (c - x) / w;
+      const lx = x - bbox.x0, ly = y - bbox.y0;
+      if (lx < 0 || ly < 0 || lx >= bbox.w || ly >= bbox.h) continue;
+      const X = x * kmAvg, Y = y * kmAvg, Dkm = Math.min(D[c] * kmAvg, DmaxKm);
+      const sector = Math.exp(0.4 * nz.fbm(X / 170, Y / 170, 3));
+      let axis = 0;
       for (const a of axes) {
-        const dx = a.ex - a.sx, dy = a.ey - a.sy, l2 = dx * dx + dy * dy;
-        const t = ((x + 0.5 - a.sx) * dx + (y + 0.5 - a.sy) * dy) / l2;
-        const tc = clamp(t, 0, 1);
-        const dist = Math.hypot(a.sx + tc * dx - x - 0.5, a.sy + tc * dy - y - 0.5);
-        const fade = t > 1 ? Math.exp(-(t - 1) * 4) : 1 - 0.35 * tc;
-        axisF += a.strength * fade * Math.exp(-((dist / a.width) ** 2));
+        const dx = a.ex - a.sx, dy = a.ey - a.sy, l2 = dx * dx + dy * dy || 1;
+        const t = clamp(((x + 0.5 - a.sx) * dx + (y + 0.5 - a.sy) * dy) / l2, 0, 1);
+        const dist = Math.hypot(a.sx + t * dx - x - 0.5, a.sy + t * dy - y - 0.5);
+        axis += a.strength * Math.exp(-((dist / a.width) ** 2));
       }
-      axisF = Math.min(axisF, 3.4);
-
-      let beltF = 1;
+      let belt = 1;
       belts.forEach((b, i) => {
         const band = Math.exp(-(((Dkm - b.depth) / b.width) ** 2));
         if (band < 0.01) return;
         const gap = smoothstep(0.22, 0.55, nzC.fbm(X / 55 + 31 * i, Y / 55, 2));
-        beltF *= 1 - 0.88 * band * (1 - gap) * (1 - 0.55 * Math.min(1, axisF - 1));
+        belt *= 1 - 0.8 * band * (1 - gap);
       });
-
-      // Slow break-in at the enemy's forward positions, tiring with depth.
-      const phase = (0.38 + 0.62 * smoothstep(0, 18, Dkm)) * (1 - 0.3 * (Dkm / DmaxKm));
-
-      const v = clamp(terrain * riverF * cityF[c] * sector * axisF * beltF * phase, 0.06, 4);
-      f[c] = v;
-      fList[k] = v;
+      const breakIn = 0.55 + 0.45 * smoothstep(0, 12, Dkm);
+      const tiring = 1 - 0.3 * (Dkm / DmaxKm);
+      att[ly * bbox.w + lx] = sector * (1 + 0.3 * Math.min(axis, 2)) * belt * breakIn * tiring;
     }
-
-    const T = fastMarch(world, mask, f, seeds, D);
-    const Tref = new Float32Array(n);
-    let maxT = 0;
-    for (let k = 0; k < n; k++) {
-      Tref[k] = T[cells[k]];
-      maxT = Math.max(maxT, Tref[k]);
-    }
-
-    const toWorld = (gx, gy) => [world.x0 + gx * world.cell, world.y0 + gy * world.cell];
-    return {
-      cells, f: fList, Tref, maxTref: maxT, seedCount: seeds.length,
-      axes: axes.map((a) => ({ from: toWorld(a.sx, a.sy), to: toWorld(a.ex, a.ey), strength: a.strength })),
-      belts: belts.length,
-    };
+    return att;
   };
 
-  // First-order fast marching method on the 4-connected grid restricted to
-  // `mask`. Speeds are km/h-equivalents; cell size varies per row.
-  function fastMarch(world, mask, f, seeds, D) {
-    const { w, h, N, rowKm, kmAvg } = world;
-    const T = new Float64Array(N).fill(Infinity);
-    const state = new Uint8Array(N); // 0 far, 1 trial, 2 accepted
-    const heap = new WM.MinHeap(1 << 16);
+  const newSide = (s) => ({
+    army: WM.START_ARMY[s], army0: WM.START_ARMY[s], killed: 0, wounded: 0, captured: 0,
+    morale: WM.START_MORALE[s], area: 0, pop: 0, towns: 0, occupied: 0,
+  });
 
-    const solve = (c) => {
-      const x = c % w, y = (c - x) / w;
-      let a = Infinity, b = Infinity;
-      if (x > 0 && state[c - 1] === 2) a = T[c - 1];
-      if (x < w - 1 && state[c + 1] === 2) a = Math.min(a, T[c + 1]);
-      if (y > 0 && state[c - w] === 2) b = T[c - w];
-      if (y < h - 1 && state[c + w] === 2) b = Math.min(b, T[c + w]);
-      if (a > b) { const t = a; a = b; b = t; }
-      const hh = rowKm[y] / f[c];
-      if (b === Infinity || b - a >= hh) return a + hh;
-      return 0.5 * (a + b + Math.sqrt(2 * hh * hh - (b - a) * (b - a)));
-    };
-    const run = () => {
-      while (heap.size) {
-        const c = heap.pop();
-        if (state[c] === 2) continue;
-        state[c] = 2;
-        const x = c % w;
-        const nbs = [x > 0 ? c - 1 : -1, x < w - 1 ? c + 1 : -1, c >= w ? c - w : -1, c < N - w ? c + w : -1];
-        for (const nb of nbs) {
-          if (nb < 0 || !mask[nb] || state[nb] === 2) continue;
-          const t = solve(nb);
-          if (t < T[nb]) { T[nb] = t; state[nb] = 1; heap.push(t, nb); }
+  // ---------------------------------------------------------------------------
+  WM.War = class War {
+    constructor(world, opts = {}) {
+      this.world = world;
+      const N = world.N;
+      this.owner = opts.owner || world.owner;
+      this.quiet = !!opts.quiet;
+      this.prog = new Float32Array(N);
+      this.pushBy = [null, new Uint8Array(N), new Uint8Array(N)];
+      this.slots = new Array(256).fill(null);
+      this.ops = [];
+      this.counter = 0;
+      this.sides = [null, newSide(1), newSide(2)];
+      this.offsets = Int32Array.from(NB.map(([dx, dy]) => dy * world.w + dx));
+      if (!this.quiet) {
+        this.display = new Uint8Array(N);
+        this.pocketHours = new Float32Array(N);
+        this.labels = new Int32Array(N);
+        this.stack = new Int32Array(N);
+        this.pocketClock = 0;
+        this.provHeld = [null, new Int32Array(world.provinces.length + 1), new Int32Array(world.provinces.length + 1)];
+        this.provCtl = new Uint8Array(world.provinces.length + 1);
+      }
+      this.recount();
+    }
+
+    // Territory, population, towns and provinces from the ownership grid.
+    recount() {
+      const { world, owner } = this;
+      for (const s of [1, 2]) Object.assign(this.sides[s], { area: 0, pop: 0, towns: 0, occupied: 0 });
+      if (this.provHeld) { this.provHeld[1].fill(0); this.provHeld[2].fill(0); }
+      for (const c of world.iranCells) {
+        const o = owner[c];
+        if (o !== 1 && o !== 2) continue;
+        const S = this.sides[o];
+        S.area += world.rowArea[(c / world.w) | 0];
+        S.pop += world.pop[c];
+        if (this.provHeld) this.provHeld[o][world.prov[c]]++;
+      }
+      for (const t of world.cities) {
+        const o = owner[t.cell];
+        if (o !== 1 && o !== 2) continue;
+        this.sides[o].towns++;
+        if (t.orig !== o) this.sides[o].occupied++;
+      }
+      if (this.provCtl) {
+        world.provinces.forEach((p) => {
+          this.provCtl[p.id] = this.provHeld[1][p.id] >= p.cells * 0.98 ? 1 : this.provHeld[2][p.id] >= p.cells * 0.98 ? 2 : 0;
+        });
+      }
+      if (this.display) this.refreshDisplay();
+    }
+
+    refreshDisplay() {
+      for (const c of this.world.iranCells) this.touch(c);
+      this.dirty = true;
+    }
+
+    // Ownership as the renderer sees it: 0 Blue … 255 Red, with partial
+    // capture progress in between so the front moves smoothly.
+    touch(c) {
+      if (!this.display) return;
+      const o = this.owner[c], p = this.prog[c];
+      this.display[c] = o === WM.RED ? 255 - ((p * 255) | 0) : o === WM.BLUE ? (p * 255) | 0 : 0;
+      this.dirty = true;
+    }
+
+    syncHalo() {
+      const h = this.world.halo, d = this.display;
+      for (let i = 0; i < h.length; i += 2) d[h[i]] = d[h[i + 1]];
+    }
+
+    deployed(side) {
+      let n = 0;
+      for (const op of this.ops) if (op.side === side) n += op.troops;
+      return n;
+    }
+    defending(side) {
+      let n = 0;
+      for (const op of this.ops) if (op.enemy === side) n += op.defPool;
+      return n;
+    }
+    available(side) {
+      return Math.max(0, this.sides[side].army - this.deployed(side) - this.defending(side));
+    }
+    // Men the defender can put into a new sector of the front.
+    defendersFor(side, wanted) {
+      return Math.min(wanted, Math.max(this.available(side) * 0.8, wanted * 0.25, 0));
+    }
+
+    local(op, c) {
+      const w = this.world.w, x = c % w, lx = x - op.bx, ly = (c - x) / w - op.by;
+      return lx < 0 || ly < 0 || lx >= op.bw || ly >= op.bh ? -1 : ly * op.bw + lx;
+    }
+
+    // Iran never touches the edge of the grid, so neighbours of Iran cells
+    // need no bounds checks.
+    adjacentTo(c, side) {
+      const own = this.owner, OFF = this.offsets;
+      for (let k = 0; k < 8; k++) if (own[c + OFF[k]] === side) return true;
+      return false;
+    }
+
+    addFront(op, c) {
+      const l = this.local(op, c);
+      if (l < 0 || !op.obj[l] || op.inFront[l]) return;
+      op.inFront[l] = 1;
+      if (op.frontN === op.front.length) {
+        const f = new Int32Array(op.front.length * 2);
+        f.set(op.front);
+        op.front = f;
+      }
+      op.front[op.frontN++] = c;
+    }
+
+    dropFront(op, i) {
+      const c = op.front[i];
+      op.inFront[this.local(op, c)] = 0;
+      op.front[i] = op.front[--op.frontN];
+    }
+
+    markPush(side) {
+      const P = this.pushBy[side], w = this.world.w;
+      P.fill(0);
+      for (const op of this.ops) {
+        if (op.side !== side || op.ended) continue;
+        for (let ly = 0; ly < op.bh; ly++) for (let lx = 0; lx < op.bw; lx++) {
+          if (op.obj[ly * op.bw + lx]) P[(op.by + ly) * w + op.bx + lx] = op.slot;
         }
       }
-    };
-
-    for (const c of seeds) {
-      const t = (0.5 * rowKm[(c / w) | 0]) / f[c];
-      if (t < T[c]) { T[c] = t; state[c] = 1; heap.push(t, c); }
     }
-    run();
 
-    // Pockets with no land contact (islands, cut-off enclaves) are taken by a
-    // landing at their point closest to our lines, after a delay.
-    for (let round = 0; round < 50; round++) {
-      let best = -1, bestD = Infinity;
-      for (let c = 0; c < N; c++) {
-        if (mask[c] && state[c] !== 2 && D[c] < bestD) { bestD = D[c]; best = c; }
+    // ------------------------------------------------------------- launch ---
+    launch(plan, prep, { troops, defense, t, name }) {
+      const world = this.world, w = world.w;
+      const side = plan.attacker, enemy = plan.enemy;
+      const { x0: bx, y0: by, w: bw, h: bh } = prep.bbox;
+      const obj = new Uint8Array(bw * bh);
+      const objCells = [];
+      for (const c of plan.cells) {
+        if (this.owner[c] !== enemy) continue;
+        const x = c % w, y = (c - x) / w;
+        obj[(y - by) * bw + (x - bx)] = 1;
+        objCells.push(c);
       }
-      if (best < 0) break;
-      let reached = 0;
-      for (let c = 0; c < N; c++) if (state[c] === 2 && T[c] > reached) reached = T[c];
-      const t = Math.min(reached, 40) + (bestD * kmAvg) / 0.7 + 12;
-      T[best] = t; state[best] = 1; heap.push(t, best);
-      run();
+      const slot = this.slots.indexOf(null, 1);
+      if (!objCells.length || slot < 0) return null;
+      const defPool = this.defendersFor(enemy, WM.sectorDefenders(prep, defense));
+      const id = ++this.counter;
+      const op = {
+        slot, id, name: name || CODENAMES[(id - 1) % CODENAMES.length], side, enemy,
+        bx, by, bw, bh, obj, objCells: Int32Array.from(objCells), att: prep.att,
+        inFront: new Uint8Array(bw * bh), front: new Int32Array(512), frontN: 0,
+        troops, troops0: troops, defense, defPool, defPool0: defPool,
+        lossAtt: 0, lossDef: 0, killedAtt: 0, killedDef: 0,
+        t0: t, lastGain: t, gained: 0, total: objCells.length, remaining: objCells.length,
+        frontKm: 0, holdDen: 0, attDen: 0, defBase: 0, counter: null, lastCounter: t,
+        seed: prep.seed, noise: WM.makeNoise(prep.seed ^ 0x2545f491), rand: WM.rng(prep.seed ^ 0x9e37),
+        axes: prep.axes, belts: prep.belts, depthMaxKm: prep.depthMaxKm, arrows: prep.arrows,
+        mode: plan.mode, path: plan.path, extensions: plan.extensions, cities: plan.cities, ended: false,
+      };
+      this.slots[slot] = op;
+      this.ops.push(op);
+      for (const c of op.objCells) if (this.adjacentTo(c, side)) this.addFront(op, c);
+      op.groups = this.makeGroups(op, prep.axes, prep.deepest, t);
+      this.markPush(side);
+      return op;
     }
-    return T;
-  }
 
-  // A running offensive: converts reference times to clock hours for a given
-  // defense strength and advances ownership as the clock passes each cell.
-  WM.Operation = class Operation {
-    constructor(world, plan, prep, defense, t0) {
-      this.world = world;
-      this.plan = plan;
-      this.prep = prep;
-      this.attacker = plan.attacker;
-      this.enemy = plan.enemy;
-      this.defense = defense;
-      this.t0 = t0;
-      this.baseOwner = world.owner.slice();
-      const base = (this.base = WM.baseSpeed(defense));
-      const { w, rowKm, rowArea } = world;
-      const n = prep.cells.length;
-      this.cells = prep.cells;
-      this.T = new Float32Array(n);
-      this.tau = new Float32Array(n);
-      let end = t0;
-      for (let k = 0; k < n; k++) {
-        const y = (prep.cells[k] / w) | 0;
-        this.T[k] = t0 + prep.Tref[k] / base;
-        // time for the front to cross this cell; only used to smooth the edge
-        this.tau[k] = Math.min(rowKm[y] / (base * prep.f[k]), 3);
-        end = Math.max(end, this.T[k] + 0.5 * this.tau[k]);
+    nextName() {
+      return CODENAMES[this.counter % CODENAMES.length];
+    }
+
+    makeGroups(op, axes, deepest, t) {
+      const { w, kmAvg } = this.world;
+      const first = op.frontN ? op.front[0] : op.objCells[0];
+      const list = axes.length ? axes : [{
+        sx: (first % w) + 0.5, sy: Math.floor(first / w) + 0.5,
+        ex: (deepest % w) + 0.5, ey: Math.floor(deepest / w) + 0.5, strength: 1,
+      }];
+      return list.map((a) => ({
+        x: a.sx, y: a.sy, tx: a.sx, ty: a.sy, gx: a.ex, gy: a.ey,
+        share: a.strength, r: (11 + 9 * op.rand()) / kmAvg, react: 0, gainT: t, retargetT: t,
+      }));
+    }
+
+    // --------------------------------------------------------------- step ---
+    step(dt, t, events) {
+      const n = Math.max(1, Math.ceil(dt / STEP));
+      const h = dt / n;
+      for (let k = 0; k < n; k++) this.tick(h, t + h * k, events);
+    }
+
+    tick(h, t, events) {
+      for (const op of this.ops) if (!op.ended) this.advance(op, h, t, events);
+      for (const op of this.ops) if (!op.ended) this.checkEnd(op, t, events);
+      if (this.ops.some((o) => o.ended)) this.ops = this.ops.filter((o) => !o.ended);
+      if (this.quiet) return;
+      for (const s of [1, 2]) {
+        const S = this.sides[s];
+        S.army += (h / 24) * S.pop * 0.00012 * (0.6 + 0.5 * S.morale);
+        S.morale += (0.8 - S.morale) * h * 0.003;
+        S.morale = clamp(S.morale, 0.15, 1.2);
       }
-      this.tEnd = end;
-      const order = new Uint32Array(n);
-      for (let k = 0; k < n; k++) order[k] = k;
-      const T = this.T;
-      this.order = order.sort((a, b) => T[a] - T[b]);
-      this.ptr = 0;
-      this.captured = 0;
-      this.totalArea = plan.area;
-      this.rowArea = rowArea;
-
-      const kOfCell = new Map();
-      for (let k = 0; k < n; k++) kOfCell.set(prep.cells[k], k);
-      this.cityEvents = world.cities
-        .filter((c) => plan.mask[c.cell])
-        .map((c) => ({ city: c, t: this.T[kOfCell.get(c.cell)] }))
-        .sort((a, b) => a.t - b.t);
-      this.cityPtr = 0;
-
-      this.provHeld = new Int32Array(world.provinces.length + 1);
-      for (const c of world.iranCells) if (world.owner[c] === this.attacker) this.provHeld[world.prov[c]]++;
-      this.provFallen = new Uint8Array(world.provinces.length + 1);
-      world.provinces.forEach((p) => { if (this.provHeld[p.id] >= p.cells * 0.98) this.provFallen[p.id] = 1; });
-      this.milestone = 0;
+      this.pocketClock += h;
+      if (this.pocketClock >= 2) {
+        this.updatePockets(this.pocketClock, t, events);
+        this.pocketClock = 0;
+      }
     }
 
-    // Capture every cell whose arrival time has passed. Returns true when done.
-    advance(t, events) {
-      const { world, cells, T, order, attacker } = this;
-      const { owner, prov, w } = world;
-      const n = cells.length;
-      while (this.ptr < n && T[order[this.ptr]] <= t) {
-        const k = order[this.ptr++];
-        const c = cells[k];
-        if (owner[c] !== attacker) {
-          owner[c] = attacker;
-          this.captured += this.rowArea[(c / w) | 0];
-          const p = prov[c];
-          this.provHeld[p]++;
-          const P = world.provinces[p - 1];
-          if (!this.provFallen[p] && this.provHeld[p] >= P.cells * 0.98) {
-            this.provFallen[p] = 1;
-            events.push({ t: T[k], side: attacker, kind: 'province', text: `${P.name} province is under ${WM.SIDE_NAME[attacker]} control.` });
+    advance(op, h, t, events) {
+      const world = this.world, own = this.owner, prog = this.prog;
+      const { w, kmAvg, defMod, moveMod, rateNoise, rowKm } = world;
+      const A = op.side, D = op.enemy, sA = this.sides[A], sD = this.sides[D];
+      const pushD = this.pushBy[D], pocket = this.pocketHours;
+      const OFF = this.offsets, WGT = WEIGHTS;
+
+      const raw = Math.max(op.frontN * kmAvg * 0.7, 6);
+      op.frontKm = op.frontKm > 0 ? op.frontKm + (raw - op.frontKm) * Math.min(1, h * 0.4) : raw;
+      op.holdDen = (op.troops * HOLD_SHARE) / op.frontKm;
+      op.attDen = op.troops / op.frontKm;
+      const groups = op.groups;
+      let shares = 0;
+      for (const g of groups) shares += g.share;
+      for (const g of groups) {
+        g.den = (op.troops * (1 - HOLD_SHARE) * g.share) / shares / (2 * g.r * kmAvg);
+        g.r2 = g.r * g.r;
+        g.q2 = 2.6 * g.r2;
+        g.lim = 9 * g.r2;
+      }
+      const armyD = Math.sqrt(clamp(sD.army / sD.army0, 0.1, 1));
+      op.defBase = (op.defPool / op.frontKm) * armyD * (0.75 + 0.35 * sD.morale) + 4;
+      const mA = 0.75 + 0.35 * sA.morale;
+
+      let lossA = 0, lossD = 0;
+      for (let i = 0; i < op.frontN;) {
+        const c = op.front[i];
+        if (own[c] !== D) { this.dropFront(op, i); continue; }
+        const x = c % w, y = (c - x) / w;
+        let nA = 0, counter = 0;
+        for (let k = 0; k < 8; k++) {
+          const n = c + OFF[k];
+          if (own[n] !== A) continue;
+          nA += WGT[k];
+          const s = pushD[n];
+          if (s) { const o2 = this.slots[s]; if (o2 && o2.attDen * 0.7 > counter) counter = o2.attDen * 0.7; }
+        }
+        if (nA === 0) { this.dropFront(op, i); continue; }
+        let focus = 0, react = 0;
+        for (const g of groups) {
+          const d2 = (x + 0.5 - g.x) ** 2 + (y + 0.5 - g.y) ** 2;
+          if (d2 > g.lim) continue;
+          focus += g.den * Math.exp(-d2 / g.r2);
+          react += g.react * Math.exp(-d2 / g.q2);
+        }
+        const l = (y - op.by) * op.bw + (x - op.bx);
+        const sector = Math.exp(0.35 * op.noise.noise((x * kmAvg) / 80 + t * 0.03, (y * kmAvg) / 80 - t * 0.02));
+        const pa = (op.holdDen + focus) * op.att[l] * mA * sector;
+        const outflank = 1 + 0.75 * Math.max(0, nA - 2.4);
+        const cut = pocket ? 1 - Math.min(0.75, pocket[c] / 72) : 1;
+        const pd = (op.defBase * (1 + 0.9 * react) * defMod[c] * cut) / outflank + counter;
+        const ratio = pa / pd;
+        let gv = 0;
+        if (ratio < 0.4) {
+          if (prog[c] > 0) { prog[c] = Math.max(0, prog[c] - h * 0.06); this.touch(c); }
+        } else {
+          gv = Math.max(0.02, (ratio - 0.55) / (ratio + 0.7));
+          const speed = Math.min(VMAX_CAP, VMAX * gv * moveMod[c] * clamp(nA / 2.4, 0.35, 1.7) * rateNoise[c]);
+          prog[c] += (speed * h) / rowKm[y];
+        }
+        const m = Math.min(pa, pd);
+        lossA += m * (1.15 - 0.5 * gv);
+        lossD += m * (0.7 + 0.9 * gv);
+        if (prog[c] >= 1) { this.flip(c, A, t, events, op); continue; }
+        if (gv) this.touch(c);
+        i++;
+      }
+      this.applyLosses(op, lossA * kmAvg * h * LOSS_RATE, lossD * kmAvg * h * LOSS_RATE, false);
+      this.moveGroups(op, h, t, events);
+      this.counterAttack(op, h, t, events);
+    }
+
+    applyLosses(op, a, d, defenderAttacking) {
+      const sA = this.sides[op.side], sD = this.sides[op.enemy];
+      a = Math.min(a, op.troops);
+      d = Math.min(d, op.defPool);
+      op.troops -= a; op.lossAtt += a; op.killedAtt += a * KILLED_SHARE;
+      op.defPool -= d; op.lossDef += d; op.killedDef += d * KILLED_SHARE;
+      sA.army = Math.max(0, sA.army - a); sA.killed += a * KILLED_SHARE; sA.wounded += a * (1 - KILLED_SHARE);
+      sD.army = Math.max(0, sD.army - d); sD.killed += d * KILLED_SHARE; sD.wounded += d * (1 - KILLED_SHARE);
+      sA.morale -= (a / Math.max(sA.army, 1000)) * (defenderAttacking ? 0.9 : 0.5);
+      sD.morale -= (d / Math.max(sD.army, 1000)) * 0.7;
+    }
+
+    // Battle groups follow their spearhead; when a thrust stalls against the
+    // defender's reserves, or reaches its goal, the effort moves elsewhere.
+    moveGroups(op, h, t, events) {
+      const { w } = this.world;
+      for (const g of op.groups) {
+        g.react = Math.min(1.5, g.react + h / 26);
+        if (t >= g.retargetT && op.frontN) {
+          g.retargetT = t + 0.5;
+          let best = -1, bestS = Infinity, near = -1, nearD = Infinity;
+          const lim = (2.5 * g.r) ** 2;
+          for (let i = 0; i < op.frontN; i++) {
+            const c = op.front[i], x = (c % w) + 0.5, y = Math.floor(c / w) + 0.5;
+            const d2 = (x - g.x) ** 2 + (y - g.y) ** 2;
+            if (d2 < nearD) { nearD = d2; near = c; }
+            if (d2 > lim) continue;
+            const s = Math.hypot(x - g.gx, y - g.gy) + 0.3 * Math.sqrt(d2);
+            if (s < bestS) { bestS = s; best = c; }
+          }
+          const c = best >= 0 ? best : near;
+          g.tx = (c % w) + 0.5;
+          g.ty = Math.floor(c / w) + 0.5;
+        }
+        const k = Math.min(1, h * 0.9);
+        g.x += (g.tx - g.x) * k;
+        g.y += (g.ty - g.y) * k;
+        const goalCell = Math.floor(g.gy) * w + Math.floor(g.gx);
+        const arrived = this.owner[goalCell] === op.side || Math.hypot(g.x - g.gx, g.y - g.gy) < 3;
+        const stalled = t - g.gainT > 9 + 5 * op.rand();
+        if ((arrived || stalled) && op.frontN) this.regroup(op, g, t, events, stalled && !arrived);
+      }
+    }
+
+    regroup(op, g, t, events, stalled) {
+      const { w } = this.world;
+      const rand = op.rand;
+      const before = this.world.nearestTown(g.x, g.y);
+      let best = op.front[0], bestS = -Infinity;
+      for (let k = 0; k < 40; k++) {
+        const c = op.front[Math.floor(rand() * op.frontN)];
+        const x = (c % w) + 0.5, y = Math.floor(c / w) + 0.5;
+        let md = 60;
+        for (const o of op.groups) if (o !== g) md = Math.min(md, Math.hypot(x - o.x, y - o.y));
+        const s = md / 60 - 0.45 * (this.world.defMod[c] - 1) + 0.7 * rand();
+        if (s > bestS) { bestS = s; best = c; }
+      }
+      g.x = g.tx = (best % w) + 0.5;
+      g.y = g.ty = Math.floor(best / w) + 0.5;
+      const L = 14 + 30 * rand();
+      let goal = -1, goalS = Infinity;
+      for (let k = 0; k < 80; k++) {
+        const c = op.objCells[Math.floor(rand() * op.objCells.length)];
+        if (this.owner[c] !== op.enemy) continue;
+        const s = Math.abs(Math.hypot((c % w) + 0.5 - g.x, Math.floor(c / w) + 0.5 - g.y) - L);
+        if (s < goalS) { goalS = s; goal = c; }
+      }
+      if (goal >= 0) { g.gx = (goal % w) + 0.5; g.gy = Math.floor(goal / w) + 0.5; }
+      g.react = 0;
+      g.gainT = t;
+      g.share = 0.6 + 0.9 * rand();
+      if (stalled && events && !this.quiet && rand() < 0.6) {
+        const after = this.world.nearestTown(g.x, g.y);
+        const side = WM.SIDE_NAME[op.side];
+        const text = before && after && before !== after
+          ? `${side} attack near ${before.name} stalls; the effort shifts towards ${after.name}.`
+          : `${side} attack near ${(before || after || { name: 'the front' }).name} is held. A fresh assault is prepared.`;
+        events.push({ t, side: op.side, kind: 'battle', text });
+      }
+    }
+
+    // Defenders strike the flank of a salient and retake ground for a while.
+    counterAttack(op, h, t, events) {
+      const world = this.world, { w, h: H, N, kmAvg, defMod, moveMod, rateNoise, rowKm } = world;
+      const own = this.owner, prog = this.prog, A = op.side, D = op.enemy, rand = op.rand, OFF = this.offsets;
+      if (!op.counter) {
+        if (op.defPool < 0.3 * op.defPool0 || t - op.lastCounter < 8 || op.frontN < 12) return;
+        const p = 0.03 * h * clamp(op.defBase / (op.holdDen + 1), 0.3, 2.5);
+        if (rand() > p) return;
+        let best = op.front[0], bestS = -Infinity;
+        for (let k = 0; k < 30; k++) {
+          const c = op.front[Math.floor(rand() * op.frontN)];
+          const x = (c % w) + 0.5, y = Math.floor(c / w) + 0.5;
+          let md = Infinity, r = 1;
+          for (const g of op.groups) { const d = Math.hypot(x - g.x, y - g.y); if (d < md) { md = d; r = g.r; } }
+          const s = -Math.abs(md / r - 2) + rand();
+          if (s > bestS) { bestS = s; best = c; }
+        }
+        let cx = (best % w) + 0.5, cy = Math.floor(best / w) + 0.5;
+        for (const [dx, dy] of NB) {
+          const n = best + dy * w + dx;
+          if (n >= 0 && n < N && own[n] === A) { cx += dx; cy += dy; break; }
+        }
+        op.counter = { x: cx, y: cy, r: (9 + 8 * rand()) / kmAvg, until: t + 6 + 10 * rand(), den: op.defBase * (1.8 + rand()) };
+        if (events && !this.quiet) {
+          const town = world.nearestTown(cx, cy);
+          events.push({ t, side: D, kind: 'battle', text: `${WM.SIDE_NAME[D]} counter-attacks near ${town ? town.name : 'the front'}.` });
+        }
+        return;
+      }
+      const ct = op.counter;
+      if (t > ct.until || op.defPool < 0.15 * op.defPool0) { op.counter = null; op.lastCounter = t; return; }
+      const R = Math.ceil(ct.r * 2), r2 = ct.r * ct.r;
+      const mD = 0.75 + 0.35 * this.sides[D].morale, mA = 0.75 + 0.35 * this.sides[A].morale;
+      let lossA = 0, lossD = 0;
+      for (let y = Math.max(0, Math.floor(ct.y) - R); y <= Math.min(H - 1, Math.floor(ct.y) + R); y++) {
+        for (let x = Math.max(0, Math.floor(ct.x) - R); x <= Math.min(w - 1, Math.floor(ct.x) + R); x++) {
+          const c = y * w + x;
+          if (own[c] !== A) continue;
+          const l = this.local(op, c);
+          if (l < 0 || !op.obj[l]) continue;
+          const d2 = (x + 0.5 - ct.x) ** 2 + (y + 0.5 - ct.y) ** 2;
+          const wgt = Math.exp(-d2 / r2);
+          if (wgt < 0.05) continue;
+          let nD = 0;
+          for (let k = 0; k < 8; k++) if (own[c + OFF[k]] === D) nD += WEIGHTS[k];
+          if (!nD) continue;
+          let focus = 0;
+          for (const g of op.groups) {
+            const g2 = (x + 0.5 - g.x) ** 2 + (y + 0.5 - g.y) ** 2;
+            if (g2 < g.lim) focus += g.den * Math.exp(-g2 / g.r2);
+          }
+          const pa = ct.den * wgt * mD;
+          const pd = ((op.holdDen + focus) * defMod[c] * mA * 0.8) / (1 + 0.75 * Math.max(0, nD - 2.4));
+          const ratio = pa / pd;
+          const m = Math.min(pa, pd);
+          if (ratio < 0.6) { lossD += m; continue; }
+          const gv = (ratio - 0.6) / (ratio + 0.7);
+          prog[c] += (Math.min(VMAX_CAP, VMAX * gv * moveMod[c] * clamp(nD / 2.4, 0.35, 1.7) * rateNoise[c]) * h) / rowKm[y];
+          lossA += m * (0.7 + 0.9 * gv);
+          lossD += m * (1.1 - 0.5 * gv);
+          if (prog[c] >= 1) this.flip(c, D, t, events, null);
+          else this.touch(c);
+        }
+      }
+      this.applyLosses(op, lossA * kmAvg * h * LOSS_RATE, lossD * kmAvg * h * LOSS_RATE, true);
+    }
+
+    // --------------------------------------------------------------- flip ---
+    flip(c, A, t, events, byOp) {
+      const world = this.world, own = this.owner, { w } = world;
+      const D = own[c];
+      own[c] = A;
+      this.prog[c] = 0;
+      const a = world.rowArea[(c / w) | 0];
+      const sA = this.sides[A], sD = this.sides[D];
+      sA.area += a; sD.area -= a;
+      sA.pop += world.pop[c]; sD.pop -= world.pop[c];
+      if (!this.quiet) {
+        this.touch(c);
+        const p = world.prov[c];
+        this.provHeld[A][p]++;
+        this.provHeld[D][p]--;
+        const P = world.provinces[p - 1];
+        if (this.provCtl[p] !== A && this.provHeld[A][p] >= P.cells * 0.98) {
+          // provCtl remembers who last held the whole province
+          if (this.provCtl[p] === D) {
+            sA.morale += 0.02; sD.morale -= 0.03;
+            if (events) events.push({ t, side: A, kind: 'province', text: `${P.name} province is under ${WM.SIDE_NAME[A]} control.` });
+          }
+          this.provCtl[p] = A;
+        }
+        const ti = world.townAt[c];
+        if (ti) {
+          const town = world.cities[ti - 1];
+          sA.towns++; sD.towns--;
+          if (town.orig === A) sD.occupied--; else sA.occupied++;
+          const weight = 0.004 + 0.03 * town.importance;
+          sA.morale += weight; sD.morale -= weight * 1.3;
+          if (events) {
+            const verb = town.orig === A ? 'liberate' : 'occupy';
+            events.push({ t, side: A, kind: 'town', text: `${WM.SIDE_NAME[A]} troops ${verb} ${town.name}.` });
           }
         }
       }
-      while (this.cityPtr < this.cityEvents.length && this.cityEvents[this.cityPtr].t <= t) {
-        const ev = this.cityEvents[this.cityPtr++];
-        events.push({ t: ev.t, side: attacker, kind: 'city', text: `${WM.SIDE_NAME[attacker]} troops take ${ev.city.name}.` });
-      }
-      const pct = this.progress();
-      for (const m of [0.25, 0.5, 0.75]) {
-        if (this.milestone < m && pct >= m) {
-          this.milestone = m;
-          events.push({ t, side: attacker, kind: 'progress', text: `${Math.round(m * 100)}% of the objective taken.` });
+      const x = c % w, y = (c - x) / w;
+      for (const op of this.ops) {
+        if (op.ended) continue;
+        const l = this.local(op, c);
+        const inObj = l >= 0 && op.obj[l];
+        if (op.side === A) {
+          if (inObj) { op.remaining--; op.gained += a; }
+          if (op === byOp) {
+            op.lastGain = t;
+            op.lastCell = c;
+            for (const g of op.groups) if ((x + 0.5 - g.x) ** 2 + (y + 0.5 - g.y) ** 2 < 2.4 * g.r2) g.gainT = t;
+          }
+          for (let k = 0; k < 8; k++) {
+            const n = c + this.offsets[k];
+            if (own[n] === op.enemy) this.addFront(op, n);
+          }
+        } else if (op.side === D) {
+          if (inObj) { op.remaining++; op.gained -= a; }
+          if (inObj && this.adjacentTo(c, D)) this.addFront(op, c);
         }
       }
-      return this.ptr >= n && t >= this.tEnd;
     }
 
-    progress() {
-      return this.totalArea ? Math.min(1, this.captured / this.totalArea) : 1;
+    checkEnd(op, t, events) {
+      const done = 1 - op.remaining / op.total;
+      // Net progress over the last day; an offensive that no longer gains
+      // ground has culminated, even if fighting goes back and forth.
+      if (!op.hist) op.hist = [];
+      if (!op.hist.length || t - op.hist[op.hist.length - 1][0] >= 3) {
+        op.hist.push([t, done]);
+        if (op.hist.length > 9) op.hist.shift();
+      }
+      const ago = op.hist[0];
+      op.trend = t - ago[0] > 2 ? ((done - ago[1]) / (t - ago[0])) * 24 : 0.2;
+      const culminated = t - op.t0 > 36 && t - ago[0] >= 23 && done - ago[1] < 0.006;
+      if (op.remaining <= 0 || (done >= 0.96 && (t - op.lastGain > 6 || culminated))) return this.endOp(op, 'success', t, events);
+      if (culminated) return this.endOp(op, done >= 0.85 ? 'success' : 'stalled', t, events);
+      if (op.troops < 0.12 * op.troops0) return this.endOp(op, 'exhausted', t, events);
+      if (t - op.lastGain > 48) return this.endOp(op, 'stalled', t, events);
+      if (!op.frontN && t - op.lastGain > 3) {
+        // Remaining objective cut off from our lines (an island or enclave): land there.
+        const { w } = this.world;
+        const ref = op.lastCell ?? op.objCells[0];
+        const rx = ref % w, ry = Math.floor(ref / w);
+        let best = -1, bd = Infinity;
+        for (const c of op.objCells) {
+          if (this.owner[c] !== op.enemy) continue;
+          const d = ((c % w) - rx) ** 2 + (Math.floor(c / w) - ry) ** 2;
+          if (d < bd) { bd = d; best = c; }
+        }
+        if (best >= 0) this.flip(best, op.side, t, events, op);
+      }
+    }
+
+    endOp(op, reason, t, events) {
+      op.ended = true;
+      op.endReason = reason;
+      op.tEnd = t;
+      for (let i = 0; i < op.frontN; i++) {
+        const c = op.front[i];
+        if (this.owner[c] === op.enemy) { this.prog[c] = 0; this.touch(c); }
+      }
+      this.slots[op.slot] = null;
+      this.markPush(op.side);
+      if (!events || this.quiet) return;
+      const side = WM.SIDE_NAME[op.side];
+      const fmt = (v) => Math.round(v).toLocaleString('en-US');
+      const toll = `${side} lost ${fmt(op.lossAtt)} men (${fmt(op.killedAtt)} killed), ${WM.SIDE_NAME[op.enemy]} ${fmt(op.lossDef)} (${fmt(op.killedDef)} killed).`;
+      const took = WM.formatKm2(Math.max(0, op.gained));
+      const text = {
+        success: `Operation ${op.name} achieves its objective: ${took} taken in ${WM.formatDuration(t - op.t0)}. ${toll}`,
+        exhausted: `Operation ${op.name} runs out of men after ${WM.formatDuration(t - op.t0)}, holding ${took}. ${toll}`,
+        stalled: `Operation ${op.name} bogs down after ${WM.formatDuration(t - op.t0)}, holding ${took}. ${toll}`,
+        halted: `Operation ${op.name} is halted after ${WM.formatDuration(t - op.t0)}, holding ${took}. ${toll}`,
+      }[reason];
+      events.push({ t, side: op.side, kind: 'op', text, opEnd: reason });
+    }
+
+    halt(op, t, events) {
+      if (!op.ended) this.endOp(op, 'halted', t, events);
+      this.ops = this.ops.filter((o) => !o.ended);
+    }
+
+    // Pockets: territory fully surrounded by the enemy loses supply, fights
+    // ever more weakly and finally surrenders.
+    updatePockets(dtH, t, events) {
+      const world = this.world, own = this.owner, { w, N } = world;
+      const labels = this.labels, stack = this.stack;
+      for (const S of [1, 2]) {
+        const E = S === 1 ? 2 : 1;
+        labels.fill(0);
+        const comps = [null];
+        for (const c0 of world.iranCells) {
+          if (own[c0] !== S || labels[c0]) continue;
+          const id = comps.length;
+          const comp = { size: 0, open: false, sx: 0, sy: 0, hours: 0 };
+          comps.push(comp);
+          let sp = 0;
+          stack[sp++] = c0;
+          labels[c0] = id;
+          while (sp) {
+            const c = stack[--sp], x = c % w;
+            comp.size++;
+            comp.sx += x;
+            comp.sy += (c - x) / w;
+            const nbs = [x > 0 ? c - 1 : -1, x < w - 1 ? c + 1 : -1, c - w, c + w];
+            for (const n of nbs) {
+              if (n < 0 || n >= N) { comp.open = true; continue; }
+              const o = own[n];
+              if (o === S) { if (!labels[n]) { labels[n] = id; stack[sp++] = n; } } else if (o !== E) comp.open = true;
+            }
+          }
+        }
+        let main = 1;
+        for (let i = 2; i < comps.length; i++) if (comps[i].size > comps[main].size) main = i;
+        for (const c of world.iranCells) {
+          if (own[c] !== S) continue;
+          const id = labels[c], comp = comps[id];
+          if (id !== main && !comp.open) {
+            this.pocketHours[c] += dtH;
+            comp.hours = Math.max(comp.hours, this.pocketHours[c]);
+          } else this.pocketHours[c] = 0;
+        }
+        for (let i = 1; i < comps.length; i++) {
+          const comp = comps[i];
+          if (i === main || comp.open) continue;
+          const area = comp.size * world.kmAvg * world.kmAvg;
+          const town = world.nearestTown(comp.sx / comp.size, comp.sy / comp.size);
+          const where = town ? town.name : 'the front';
+          if (comp.hours <= dtH + 1e-6 && comp.size >= 25 && events) {
+            events.push({ t, side: E, kind: 'pocket', text: `${WM.SIDE_NAME[S]} forces are encircled near ${where} (${WM.formatKm2(area)}).` });
+          }
+          if (comp.hours >= 30 + area / 250) this.surrender(S, E, i, area, where, t, events);
+        }
+      }
+    }
+
+    surrender(S, E, id, area, where, t, events) {
+      const world = this.world, labels = this.labels;
+      const prisoners = Math.round(Math.min(this.sides[S].army * 0.5, area * 2.2));
+      for (const c of world.iranCells) if (labels[c] === id && this.owner[c] === S) this.flip(c, E, t, events, null);
+      const sS = this.sides[S], sE = this.sides[E];
+      sS.army -= prisoners;
+      sS.captured += prisoners;
+      sS.morale -= 0.04;
+      sE.morale += 0.03;
+      if (events && prisoners >= 200) {
+        events.push({ t, side: E, kind: 'pocket', text: `Encircled ${WM.SIDE_NAME[S]} troops near ${where} surrender: ${prisoners.toLocaleString('en-US')} taken prisoner.` });
+      }
+    }
+
+    // ------------------------------------------------------------- stats ---
+    stats() {
+      const world = this.world;
+      const power = [0, 0, 0];
+      for (const s of [1, 2]) {
+        const S = this.sides[s];
+        power[s] = S.army * (0.55 + 0.45 * S.morale) + S.pop * 0.012 + S.towns * 900;
+      }
+      const out = [null];
+      for (const s of [1, 2]) {
+        const S = this.sides[s];
+        let provinces = 0;
+        if (this.provHeld) world.provinces.forEach((p) => { if (this.provHeld[s][p.id] * 2 >= p.cells) provinces++; });
+        out.push({
+          ...S, provinces, share: S.area / (this.sides[1].area + this.sides[2].area || 1),
+          deployed: this.deployed(s), defending: this.defending(s), available: this.available(s),
+          power: power[s] / (power[1] + power[2] || 1),
+        });
+      }
+      return out;
+    }
+
+    // Where each battle is fought and how many men are in it, for the map:
+    // the main battle group's position and the direction from the
+    // attacker's side of the front to the defender's.
+    battles() {
+      const world = this.world, { w } = world, own = this.owner;
+      const toWorld = (gx, gy) => [world.x0 + gx * world.cell, world.y0 + gy * world.cell];
+      return this.ops.filter((op) => !op.ended && op.frontN).map((op) => {
+        let g = op.groups[0];
+        for (const o of op.groups) if (o.share > g.share) g = o;
+        let vx = 0, vy = 0;
+        const gx = Math.floor(g.x), gy = Math.floor(g.y);
+        for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+          const o = own[(gy + dy) * w + gx + dx];
+          const s = o === op.enemy ? 1 : o === op.side ? -1 : 0;
+          vx += dx * s;
+          vy += dy * s;
+        }
+        let len = Math.hypot(vx, vy);
+        if (len < 1) { vx = g.gx - g.x; vy = g.gy - g.y; len = Math.hypot(vx, vy) || 1; }
+        return {
+          op, at: toWorld(g.x, g.y), dir: [vx / len, vy / len],
+          attackers: Math.round(op.troops), defenders: Math.round(op.defPool),
+        };
+      });
+    }
+
+    // ---------------------------------------------------------- persistence ---
+    serialize() {
+      const rle = (arr) => {
+        const out = [];
+        let v = 0, run = 0;
+        for (let i = 0; i < arr.length; i++) {
+          const b = arr[i] ? 1 : 0;
+          if (b === v) run++;
+          else { out.push(run); v = b; run = 1; }
+        }
+        out.push(run);
+        return out;
+      };
+      const r1 = (v) => Math.round(v * 10) / 10;
+      return {
+        sides: this.sides.slice(1).map((s) => ({ ...s })),
+        counter: this.counter,
+        ops: this.ops.map((op) => ({
+          id: op.id, name: op.name, side: op.side, enemy: op.enemy,
+          bbox: { x0: op.bx, y0: op.by, w: op.bw, h: op.bh }, obj: rle(op.obj),
+          troops: op.troops, troops0: op.troops0, defense: op.defense, defPool: op.defPool, defPool0: op.defPool0,
+          lossAtt: op.lossAtt, lossDef: op.lossDef, killedAtt: op.killedAtt, killedDef: op.killedDef,
+          t0: op.t0, lastGain: op.lastGain, gained: op.gained, total: op.total, seed: op.seed,
+          axes: op.axes, belts: op.belts, depthMaxKm: op.depthMaxKm, arrows: op.arrows, mode: op.mode, cities: op.cities,
+          path: op.path.map(([x, y]) => [r1(x), r1(y)]),
+          extensions: (op.extensions || []).map((seg) => seg.map(([x, y]) => [r1(x), r1(y)])),
+          groups: op.groups.map((g) => ({ x: g.x, y: g.y, gx: g.gx, gy: g.gy, share: g.share, r: g.r })),
+        })),
+      };
+    }
+
+    restore(data, t) {
+      if (!data || !Array.isArray(data.sides)) return;
+      data.sides.forEach((s, i) => Object.assign(this.sides[i + 1], s));
+      this.counter = data.counter || 0;
+      const world = this.world, w = world.w;
+      for (const d of data.ops || []) {
+        const { x0: bx, y0: by, w: bw, h: bh } = d.bbox;
+        const obj = new Uint8Array(bw * bh);
+        let k = 0, v = 0;
+        for (const run of d.obj) { if (v) obj.fill(1, k, k + run); k += run; v ^= 1; }
+        const objCells = [];
+        for (let ly = 0; ly < bh; ly++) for (let lx = 0; lx < bw; lx++) if (obj[ly * bw + lx]) objCells.push((by + ly) * w + bx + lx);
+        const slot = this.slots.indexOf(null, 1);
+        if (slot < 0 || !objCells.length) continue;
+        const D = world.distanceFrom(d.side);
+        const att = WM.attackWeights(world, d.bbox, objCells, d.axes, d.belts, d.seed, D, d.depthMaxKm);
+        const op = {
+          ...d, slot, bx, by, bw, bh, obj, objCells: Int32Array.from(objCells), att,
+          inFront: new Uint8Array(bw * bh), front: new Int32Array(512), frontN: 0, remaining: 0,
+          frontKm: 0, holdDen: 0, attDen: 0, defBase: 0, counter: null, lastCounter: t,
+          noise: WM.makeNoise(d.seed ^ 0x2545f491), rand: WM.rng(d.seed ^ 0x9e37), ended: false,
+          groups: d.groups.map((g) => ({ ...g, tx: g.x, ty: g.y, react: 0, gainT: t, retargetT: t })),
+        };
+        delete op.bbox;
+        for (const c of objCells) if (this.owner[c] !== op.side) op.remaining++;
+        this.slots[slot] = op;
+        this.ops.push(op);
+        for (const c of objCells) if (this.owner[c] === op.enemy && this.adjacentTo(c, op.side)) this.addFront(op, c);
+      }
+      this.markPush(1);
+      this.markPush(2);
+      this.recount();
     }
   };
+
+  // Runs a planned offensive on its own, on a copy of the map, to forecast how
+  // it would go if the enemy launched nothing in the meantime. Runs in slices
+  // so the page stays responsive.
+  WM.Forecast = class Forecast {
+    constructor(war, plan, prep, troops, defense, t) {
+      const world = war.world;
+      let f = war.forecaster;
+      if (!f) f = war.forecaster = new WM.War(world, { owner: new Uint8Array(world.N), quiet: true });
+      f.owner.set(war.owner);
+      f.prog.fill(0);
+      f.ops = [];
+      f.slots.fill(null);
+      f.pushBy[1].fill(0);
+      f.pushBy[2].fill(0);
+      war.sides.forEach((s, i) => { if (s) Object.assign(f.sides[i], s); });
+      this.f = f;
+      this.t0 = this.t = t;
+      this.op = f.launch(plan, prep, { troops, defense, t, name: 'forecast' });
+      if (this.op) {
+        // Match the defenders the real launch would get, given commitments elsewhere.
+        this.op.defPool = this.op.defPool0 = war.defendersFor(plan.enemy, WM.sectorDefenders(prep, defense));
+      }
+      this.done = !this.op;
+    }
+
+    run(budgetMs) {
+      const start = performance.now();
+      const limit = this.t0 + 24 * 40;
+      let n = 0;
+      while (!this.done) {
+        this.f.tick(STEP, this.t, null);
+        this.t += STEP;
+        if (this.op.ended || this.t >= limit) this.done = true;
+        if (++n % 20 === 0 && performance.now() - start > budgetMs) break;
+      }
+      return this.done;
+    }
+
+    result() {
+      const op = this.op;
+      if (!op) return null;
+      return {
+        hours: this.t - this.t0, reason: op.ended ? op.endReason : 'ongoing',
+        progress: 1 - op.remaining / op.total, lossAtt: op.lossAtt, lossDef: op.lossDef,
+        killedAtt: op.killedAtt, killedDef: op.killedDef, defenders: op.defPool0,
+      };
+    }
+  };
+
+  WM.forecast = function (war, plan, prep, troops, defense, t) {
+    const f = new WM.Forecast(war, plan, prep, troops, defense, t);
+    while (!f.run(1e9));
+    return f.result();
+  };
+
+  // Men the defender would like to hold a planned sector with.
+  WM.sectorDefenders = (prep, defense) => WM.defenseDensity(defense) * prep.frontKm0 * (1 + prep.depthMaxKm / 90);
 })(window.WM);

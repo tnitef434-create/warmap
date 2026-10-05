@@ -77,6 +77,59 @@
         const importance = WM.clamp((Math.log10(c.pop) - 4.3) / 2.6, 0, 1);
         this.cities.push({ ...c, cell, importance, province: prov[cell] });
       }
+      for (const t of this.cities) t.orig = this.scenarioOwner(t.cell);
+      this.buildBattlefield();
+    }
+
+    // Static layers used by the battle model.
+    buildBattlefield() {
+      const { w, N, prov, rug, river } = this;
+      this.defMod = new Float32Array(N);   // how well the ground favours the defender
+      this.moveMod = new Float32Array(N);  // how quickly troops can move across it
+      this.rateNoise = new Float32Array(N);
+      this.pop = new Float32Array(N);      // inhabitants, scaled to Persia's ~10 million in 1902
+      this.townAt = new Int16Array(N);
+      const rand = WM.rng(4242);
+      let weight = 0;
+      for (const c of this.iranCells) {
+        const r = rug[c] / 255, x = c % w;
+        let rv = river[c];
+        if (x > 0) rv = Math.max(rv, river[c - 1]);
+        if (x < w - 1) rv = Math.max(rv, river[c + 1]);
+        if (c >= w) rv = Math.max(rv, river[c - w]);
+        if (c < N - w) rv = Math.max(rv, river[c + w]);
+        this.defMod[c] = (1 + 0.85 * Math.pow(r, 0.9)) * (1 + 0.9 * (rv / 255));
+        this.moveMod[c] = 1.12 - 0.6 * Math.pow(r, 0.85);
+        this.rateNoise[c] = Math.exp(0.6 * (rand() + rand() + rand() - 1.5));
+        const wt = this.rowArea[(c / w) | 0] * (1.25 - 0.75 * r);
+        this.pop[c] = wt;
+        weight += wt;
+      }
+      for (const c of this.iranCells) this.pop[c] *= 7.6e6 / weight;
+      let urban = 0;
+      for (const t of this.cities) urban += Math.pow(t.pop, 0.8);
+      this.cities.forEach((t, i) => {
+        if (!this.townAt[t.cell]) this.townAt[t.cell] = i + 1;
+        this.pop[t.cell] += (2.4e6 * Math.pow(t.pop, 0.8)) / urban;
+        // towns are fortified: defenders hold out in and around them
+        const rc = (3 + 7 * t.importance) / this.kmAvg, R = Math.ceil(rc * 2.5);
+        const cx = t.cell % w, cy = Math.floor(t.cell / w);
+        for (let y = cy - R; y <= cy + R; y++) for (let x = cx - R; x <= cx + R; x++) {
+          if (x < 0 || y < 0 || x >= w || y >= this.h) continue;
+          const c = y * w + x;
+          if (!prov[c]) continue;
+          this.defMod[c] *= 1 + (1 + 1.8 * t.importance) * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (rc * rc));
+        }
+      });
+      // Cells just outside Iran's raster mask copy a nearby Iran cell so the
+      // vector coastline never shows a gap.
+      const halo = [];
+      for (let c = 0; c < N; c++) {
+        const s = this.nearest[c];
+        if (prov[c] || s < 0) continue;
+        if (Math.abs((c % w) - (s % w)) <= 4 && Math.abs(Math.floor(c / w) - Math.floor(s / w)) <= 4) halo.push(c, s);
+      }
+      this.halo = Int32Array.from(halo);
     }
 
     cellAt(x, y) {
@@ -90,40 +143,41 @@
       return [this.x0 + (i + 0.5) * this.cell, this.y0 + (j + 0.5) * this.cell];
     }
 
-    applyScenario(redProvinces = WM.START_RED_PROVINCES) {
-      const red = new Set(redProvinces);
-      const R = this.geo.region;
-      // Red also holds the western uplands of Isfahan province, linking its
-      // northern block with Chaharmahal; the line there is an irregular front.
-      const lonToX = (lon) => ((lon + 180) / 360) * R.world - R.ox;
-      const cutX = lonToX(51.0), wobble = lonToX(51.7) - cutX;
-      const noise = WM.makeNoise(1902);
-      this.owner.fill(0);
-      for (const c of this.iranCells) {
-        const name = this.provinces[this.prov[c] - 1].name;
-        let isRed = red.has(name);
-        if (!isRed && name === 'Isfahan') {
-          const [x, y] = this.cellCenter(c);
-          isRed = x < cutX + wobble * noise.fbm(x / 140, y / 90, 5);
-        }
-        this.owner[c] = isRed ? WM.RED : WM.BLUE;
+    // Opening owner of a cell: a Red-held block in the western highlands,
+    // reaching into the western uplands of Isfahan along an irregular front.
+    scenarioOwner(c) {
+      if (!this._scenario) {
+        const R = this.geo.region;
+        const lonToX = (lon) => ((lon + 180) / 360) * R.world - R.ox;
+        this._scenario = {
+          red: new Set(WM.START_RED_PROVINCES),
+          cutX: lonToX(51.0), wobble: lonToX(51.7) - lonToX(51.0), noise: WM.makeNoise(1902),
+        };
       }
+      const S = this._scenario;
+      if (!this.prov[c]) return WM.NONE;
+      const name = this.provinces[this.prov[c] - 1].name;
+      if (S.red.has(name)) return WM.RED;
+      if (name === 'Isfahan') {
+        const [x, y] = this.cellCenter(c);
+        if (x < S.cutX + S.wobble * S.noise.fbm(x / 140, y / 90, 5)) return WM.RED;
+      }
+      return WM.BLUE;
     }
 
-    stats() {
-      const area = [0, 0, 0];
-      const provHeld = this.provinces.map(() => [0, 0, 0]);
-      for (const c of this.iranCells) {
-        const o = this.owner[c];
-        area[o] += this.rowArea[(c / this.w) | 0];
-        provHeld[this.prov[c] - 1][o]++;
+    applyScenario() {
+      this.owner.fill(0);
+      for (const c of this.iranCells) this.owner[c] = this.scenarioOwner(c);
+    }
+
+    nearestTown(gx, gy) {
+      let best = null, bd = Infinity;
+      for (const t of this.cities) {
+        const x = t.cell % this.w, y = Math.floor(t.cell / this.w);
+        const d = (x - gx) ** 2 + (y - gy) ** 2;
+        if (d < bd) { bd = d; best = t; }
       }
-      const provinces = [0, 0, 0];
-      this.provinces.forEach((p, i) => {
-        if (provHeld[i][WM.BLUE] / p.cells >= 0.5) provinces[WM.BLUE]++;
-        else provinces[WM.RED]++;
-      });
-      return { area, provinces };
+      return best;
     }
 
     // Approximate Euclidean distance (in cells) from every cell to the nearest
