@@ -509,3 +509,18 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--brass); out
 #endModal[data-won="true"] h2 { color: var(--brass); }
 #endModal[data-won="false"] h2 { color: var(--red-ink); }
 .end-card p { margin: 0; }
+
+/* ---------- Advice, timelapse ---------- */
+.op-advice { margin: 2px 0 0; padding: 5px 8px; font-size: 12px; border-left: 2px solid var(--brass); background: rgba(217, 169, 78, 0.08); color: var(--paper); }
+.link-tight { margin-left: 0; }
+#app.replaying .ui, #app.replaying .clock .speed, #app.replaying .clock .hourbar, #app.replaying .clock-note { display: none !important; }
+#app.replaying .clock { display: grid !important; }
+.replay-bar {
+  position: absolute; left: 50%; bottom: calc(var(--gutter) + var(--safe-bottom)); transform: translateX(-50%);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 12px;
+  width: min(760px, calc(100% - 2 * var(--gutter)));
+  background: var(--plate-solid); border: 1px solid var(--rule-strong); border-radius: 4px; box-shadow: var(--shadow);
+}
+.rp-title { font-family: var(--font-display-sc); font-size: 17px; letter-spacing: 0.05em; }
+#rpSeek { flex: 1 1 160px; accent-color: var(--brass); min-width: 0; }
+.rp-day { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }

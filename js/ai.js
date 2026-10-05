@@ -7,9 +7,9 @@
   const { clamp, lerp } = WM;
 
   WM.DIFFICULTY = {
-    easy: { label: 'Easy', maxOps: 1, commit: [0.35, 0.5], gap: [70, 120], reinforce: 0.35, recruit: 0.8, fortEvery: 220, firstAttack: 40 },
-    normal: { label: 'Normal', maxOps: 2, commit: [0.45, 0.65], gap: [36, 72], reinforce: 0.7, recruit: 1.0, fortEvery: 120, firstAttack: 24 },
-    hard: { label: 'Hard', maxOps: 3, commit: [0.55, 0.75], gap: [20, 44], reinforce: 1.0, recruit: 1.3, fortEvery: 70, firstAttack: 12 },
+    easy: { label: 'Easy', maxOps: 1, commit: [0.35, 0.5], gap: [300, 520], reinforce: 0.35, recruit: 0.8, fortEvery: 220, firstAttack: 40 },
+    normal: { label: 'Normal', maxOps: 2, commit: [0.45, 0.65], gap: [180, 340], reinforce: 0.7, recruit: 1.0, fortEvery: 120, firstAttack: 24 },
+    hard: { label: 'Hard', maxOps: 3, commit: [0.55, 0.75], gap: [110, 220], reinforce: 1.0, recruit: 1.3, fortEvery: 70, firstAttack: 12 },
   };
   const fmt = (v) => Math.round(Math.max(0, v)).toLocaleString('en-US');
 
@@ -51,9 +51,23 @@
       }
     }
 
-    // Rush reserves into sectors where the enemy clearly outnumbers us.
+    // Rush reserves into sectors where the enemy clearly outnumbers us, and
+    // strike back where our defenders clearly outnumber the attacker.
     defend(t, events) {
       const war = this.war;
+      for (const op of war.ops.slice()) {
+        if (op.enemy !== this.side || op.ended || op.countered) continue;
+        if (t - op.t0 > 72 && op.defPool > 1.5 * op.troops && op.gained > 300 && this.rand() < 0.15 * this.cfg.reinforce) {
+          const plan = war.counterPlan(op);
+          if (!plan) continue;
+          op.countered = true;
+          const troops = Math.round(op.defPool * 0.5);
+          op.defPool -= troops; op.defPool0 -= troops;
+          const seed = (this.rand() * 1e6) | 0;
+          const c = war.launch(plan, WM.prepareOperation(this.world, plan, seed), { troops, defense: null, defenders: Math.max(1500, op.troops * 0.6), t });
+          if (c) events.push({ t, side: this.side, kind: 'alert', opStart: c.id, text: `Enemy counter-attack! Operation ${c.name}: ${fmt(troops)} ${WM.SIDE_NAME[this.side]} troops strike back against Operation ${op.name}.` });
+        }
+      }
       for (const op of war.ops) {
         if (op.enemy !== this.side || op.ended) continue;
         if (t - (this.reinforced.get(op.id) ?? -1e9) < 10) continue;
@@ -75,9 +89,11 @@
       for (const op of war.ops.slice()) {
         if (op.side !== this.side || op.ended) continue;
         const trend = op.trend ?? 0.2;
-        if (t - op.t0 > 24 && op.troops < 0.3 * op.troops0 && trend < 0.01) {
+        // stuck against far stronger defenders: call it off, as a player would
+        const outmatched = t - op.t0 > 96 && op.troops < 0.6 * op.defPool && trend < 0.002;
+        if ((t - op.t0 > 120 && op.troops < 0.3 * op.troops0 && trend < 0.002) || outmatched) {
           war.halt(op, t, events);
-        } else if (trend > 0.05 && t - (this.reinforced.get(op.id) ?? -1e9) > 24 && war.available(this.side) > 40000 && this.rand() < 0.3 * this.cfg.reinforce) {
+        } else if (trend > 0.01 && t - (this.reinforced.get(op.id) ?? -1e9) > 24 && war.available(this.side) > 40000 && this.rand() < 0.3 * this.cfg.reinforce) {
           this.reinforced.set(op.id, t);
           war.reinforce(op, op.troops0 * 0.2, this.side);
         }

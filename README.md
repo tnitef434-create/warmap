@@ -123,3 +123,15 @@ node tools/build-data.mjs natural-earth-vector natural-earth-raster
 node tools/sim-check.mjs [defense] [seed] [troops]   # opposing offensives, then 20 days of AI against AI
 node tools/bundle.mjs                                # single-file build in dist/
 ```
+
+## Pace and operation control
+
+Fronts move at most about 20 km a day, and much less against real resistance.
+A small push takes a few days. A large offensive across a province takes weeks or months.
+
+- **Advice:** an attack that bleeds troops or stops gaining ground shows a recommendation to halt it.
+- **Halting:** costs about 8% of the attacking force and leaves that sector shaken for a week, so it is easier to attack.
+- **Operation controls:** you can Boost, Withdraw troops, or build a New plan from an existing attack.
+- **Counter-attack:** when a defense is clearly winning, a Counter-attack button appears.
+- **AI:** the computer halts hopeless attacks and counter-attacks in the same way.
+- **Timelapse:** after a match, or from the footer, replay the war in slow, fast or very fast mode, with the date shown.

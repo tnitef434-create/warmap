@@ -99,8 +99,9 @@
       this.war = new WM.War(this.world);
       Object.assign(st, {
         mode, player: mode === 'campaign' ? player : 0, level, time: 0, winner: 0, over: false,
-        plans: [], drawing: null, side: mode === 'campaign' ? player : 0, tool: 'attack', log: [], paused: false,
+        plans: [], drawing: null, side: mode === 'campaign' ? player : 0, tool: 'attack', log: [], paused: false, history: [],
       });
+      this.snapshot(true);
       this.ai = mode === 'campaign' ? new WM.AI(this.war, this.planner, other(player), level) : null;
       const held = WM.START_RED_PROVINCES.slice(0, -1).join(', ') + ' and ' + WM.START_RED_PROVINCES.slice(-1);
       this.addLog({ t: 0, side: WM.RED, text: `Red forces hold ${held}, with ${fmt(WM.START_ARMY[WM.RED])} men under arms.` });
@@ -128,7 +129,7 @@
       storage.set({
         v: 3, mode: st.mode, player: st.player, level: st.level, time: st.time, speed: st.speed,
         winner: st.winner, over: st.over, owner: this.world.encodeOwner(), war: this.war.serialize(),
-        ai: this.ai ? this.ai.save() : null, log: st.log.slice(0, 150),
+        ai: this.ai ? this.ai.save() : null, log: st.log.slice(0, 150), history: (st.history || []).slice(-400),
       });
       this.timers.save = performance.now();
     }
@@ -141,7 +142,7 @@
       Object.assign(st, {
         mode: s.mode === 'campaign' ? 'campaign' : 'sandbox', player: s.player || 0, level: s.level || 'normal',
         time: +s.time || 0, speed: WM.clamp(s.speed | 0, 0, SPEEDS.length - 1), winner: s.winner || 0, over: !!s.over,
-        log: Array.isArray(s.log) ? s.log : [],
+        log: Array.isArray(s.log) ? s.log : [], history: Array.isArray(s.history) ? s.history : [],
       });
       st.side = st.mode === 'campaign' ? st.player : 0;
       this.war = new WM.War(this.world);
@@ -384,7 +385,7 @@
     }
 
     dialogOpen() {
-      return !$('attackModal').hidden || !$('menu').hidden || !$('endModal').hidden;
+      return !$('attackModal').hidden || !$('menu').hidden || !$('endModal').hidden || !!this.replay;
     }
 
     canDraw() {
@@ -523,6 +524,17 @@
         this.toast(p ? `Campaign started. You command ${WM.SIDE_NAME[p]}; the enemy will strike soon.` : 'Sandbox: you give orders to both armies.');
       }));
       $('endWatch').addEventListener('click', () => { $('endModal').hidden = true; });
+      $('endReplay').addEventListener('click', () => this.startReplay());
+      $('btnReplay').addEventListener('click', () => this.startReplay());
+      $('rpClose').addEventListener('click', () => this.stopReplay());
+      $('rpPlay').addEventListener('click', () => {
+        const rp = this.replay;
+        if (rp.pos >= this.st.history.length - 1) rp.pos = 0;
+        rp.playing = !rp.playing;
+        $('rpPlay').textContent = rp.playing ? 'Pause' : 'Play';
+      });
+      document.querySelectorAll('#replayBar [data-rate]').forEach((b) => b.addEventListener('click', () => { this.replay.rate = +b.dataset.rate; }));
+      $('rpSeek').addEventListener('input', (e) => { this.replay.pos = +e.target.value; this.showReplay(+e.target.value); });
       $('endNew').addEventListener('click', () => { $('endModal').hidden = true; this.openMenu(false); });
     }
 
@@ -733,26 +745,29 @@
           li.dataset.side = op.side;
           const ours = !camp || op.side === me;
           if (camp && !ours) li.classList.add('enemy');
+          const b = (act, label) => `<button type="button" data-act="${act}">${label}</button>`;
           const acts = !camp
-            ? '<button type="button" data-act="att">+5,000 attackers</button><button type="button" data-act="def">+5,000 defenders</button><button type="button" data-act="halt">Halt</button>'
+            ? b('att', '+5,000 attackers') + b('pull', '−5,000 attackers') + b('def', '+5,000 defenders') + b('pulldef', '−5,000 defenders') + b('counter', 'Counter-attack') + b('replan', 'New plan from this') + b('halt', 'Halt')
             : ours
-              ? '<button type="button" data-act="att">Send 5,000 more</button><button type="button" data-act="halt">Halt</button>'
-              : '<button type="button" data-act="def">Send 5,000 defenders</button>';
+              ? b('att', 'Boost +5,000') + b('pull', 'Withdraw 5,000') + b('replan', 'New plan from this') + b('halt', 'Halt')
+              : b('def', 'Send 5,000 defenders') + b('pulldef', 'Withdraw 5,000') + b('counter', 'Counter-attack');
           li.innerHTML = `<div class="op-head"><button type="button" class="op-name"></button><span class="op-status"></span></div>
             <div class="op-sub"></div><div class="progress"><i></i></div>
             <div class="op-nums"><span>Attackers</span><span class="n-att"></span><span>Defenders</span><span class="n-def"></span><span>Killed</span><span class="n-kill"></span><span>Ground taken</span><span class="n-area"></span></div>
+            <p class="op-advice" hidden></p>
             <div class="op-acts">${acts}</div>`;
           li.querySelector('.op-name').textContent = `Operation ${op.name}`;
           list.prepend(li);
           row = {
             li, status: li.querySelector('.op-status'), sub: li.querySelector('.op-sub'), bar: li.querySelector('.progress i'),
             att: li.querySelector('.n-att'), def: li.querySelector('.n-def'), kill: li.querySelector('.n-kill'), area: li.querySelector('.n-area'),
+            advice: li.querySelector('.op-advice'), counter: li.querySelector('[data-act="counter"]'),
           };
           this.opRows.set(op.id, row);
         }
         const age = this.st.time - op.t0;
         const trend = op.trend ?? 0.2;
-        const [label, key] = age < 4 ? ['Opening', 'adv'] : trend > 0.12 ? ['Breakthrough', 'break'] : trend > 0.04 ? ['Advancing', 'adv'] : trend > 0.008 ? ['Heavy fighting', 'heavy'] : ['Stalled', 'stall'];
+        const [label, key] = age < 4 ? ['Opening', 'adv'] : trend > 0.025 ? ['Breakthrough', 'break'] : trend > 0.008 ? ['Advancing', 'adv'] : trend > 0.0016 ? ['Heavy fighting', 'heavy'] : ['Stalled', 'stall'];
         row.status.textContent = label;
         row.status.dataset.s = key;
         const day = Math.floor(age / 24) + 1, hour = Math.floor(age % 24);
@@ -763,6 +778,16 @@
         row.def.textContent = `${fmt(op.defPool)} / ${fmt(op.defPool0)}`;
         row.kill.textContent = `${fmt(op.killedAtt)} · ${fmt(op.killedDef)}`;
         row.area.textContent = `${Math.floor((1 - op.remaining / op.total) * 100)}% · ${short(Math.max(0, op.gained))} km²`;
+        // Advice: call off attacks that bleed or go nowhere; strike back when holding well.
+        const bleeding = op.lossAtt > 0.35 * op.troops0, stuck = age > 120 && trend < 0.0016;
+        const winningDefence = op.defPool > 1.3 * op.troops && op.gained > 300 && !op.countered;
+        const ownsAttack = !camp || op.side === me, ownsDefence = !camp || op.enemy === me;
+        let advice = '';
+        if (ownsAttack && (bleeding || stuck)) advice = `Advice: halt this attack. ${bleeding ? 'It is costing too many men' : 'It has stopped making progress'}; halting costs about ${fmt(op.troops * 0.08)} men in the retreat.`;
+        else if (ownsDefence && winningDefence) advice = 'Advice: your defenders clearly outnumber the attackers here. Counter-attack to take the ground back.';
+        row.advice.textContent = advice;
+        row.advice.hidden = !advice;
+        if (row.counter) row.counter.hidden = !winningDefence;
       }
       for (const [id, row] of this.opRows) {
         if (!seen.has(id)) { row.li.remove(); this.opRows.delete(id); }
@@ -776,6 +801,41 @@
     opAction(op, act) {
       const st = this.st;
       if (act === 'halt') { this.haltOperation(op); return; }
+      if (act === 'replan') {
+        // a fresh plan on the same line, ready to adjust and launch again
+        const entry = { id: ++st.planCounter, kind: 'attack', side: op.side, path: op.path, seed: (Math.random() * 1e6) | 0 };
+        if (this.replan(entry, false)) {
+          st.plans.push(entry);
+          if (!this.campaign) st.side = op.side;
+          this.setTab('command');
+          this.plansChanged();
+          this.toast(`New plan drawn from Operation ${op.name}'s line. Adjust it, then press Attack.`);
+        }
+        return;
+      }
+      if (act === 'counter') {
+        const plan = this.war.counterPlan(op);
+        if (!plan) { this.toast('The enemy has not taken any ground here yet.'); return; }
+        op.countered = true;
+        const troops = Math.round(op.defPool * 0.5);
+        op.defPool -= troops; op.defPool0 -= troops;
+        const c = this.war.launch(plan, WM.prepareOperation(this.world, plan, (Math.random() * 1e6) | 0), { troops, defense: null, defenders: Math.max(1500, op.troops * 0.6), t: st.time });
+        if (c) {
+          this.addLog({ t: st.time, side: c.side, kind: 'op', text: `Operation ${c.name}: ${WM.SIDE_NAME[c.side]} counter-attacks with ${fmt(troops)} of its defenders to retake the ground lost to Operation ${op.name}.` });
+          this.opsChanged();
+          this.toast(`Counter-attack launched: Operation ${c.name}.`);
+        }
+        return;
+      }
+      if (act === 'pull' || act === 'pulldef') {
+        const side = act === 'pull' ? op.side : op.enemy;
+        const n = this.war.withdraw(op, REINFORCE, side);
+        if (!n) { this.toast('Too few men left there to withdraw any.'); return; }
+        this.addLog({ t: st.time, side, text: `${WM.SIDE_NAME[side]} pulls ${fmt(n)} men out of the fighting around Operation ${op.name}.` });
+        this.refreshOps();
+        this.refreshStats();
+        return;
+      }
       const side = act === 'att' ? op.side : op.enemy;
       const n = this.war.reinforce(op, REINFORCE, side);
       if (!n) {
@@ -1112,12 +1172,77 @@
       return list;
     }
 
+    // ---------------------------------------------------------- timelapse ---
+    // The map is recorded every 6 game hours; at the end (or any time) the
+    // whole war can be replayed fast or slow with its date.
+    snapshot(force) {
+      const st = this.st;
+      if (!st.history) st.history = [];
+      const last = st.history[st.history.length - 1];
+      if (!force && last && st.time - last.t < 6) return;
+      st.history.push({ t: st.time, o: this.world.encodeOwner() });
+    }
+
+    startReplay() {
+      const st = this.st;
+      this.snapshot(true);
+      if (!st.history || st.history.length < 2) { this.toast('Nothing to replay yet. Let the war run a little first.'); return; }
+      $('endModal').hidden = true;
+      this.replay = { pos: 0, rate: 8, playing: true, buf: new Uint8Array(this.world.N) };
+      this.el.classList.add('replaying');
+      $('replayBar').hidden = false;
+      $('rpSeek').max = String(st.history.length - 1);
+      this.showReplay(0);
+    }
+
+    stopReplay() {
+      this.replay = null;
+      this.el.classList.remove('replaying');
+      $('replayBar').hidden = true;
+      this.syncMap();
+    }
+
+    showReplay(i) {
+      const st = this.st, world = this.world, snap = st.history[i], buf = this.replay.buf;
+      let k = 0;
+      for (let j = 0; j < snap.o.length; j += 2) {
+        const v = snap.o[j] === WM.RED ? 255 : 0;
+        for (let r = 0; r < snap.o[j + 1]; r++) buf[world.iranCells[k++]] = v;
+      }
+      const h = world.halo;
+      for (let j = 0; j < h.length; j += 2) buf[h[j]] = buf[h[j + 1]];
+      this.renderer.setOwnership(buf);
+      this.renderer.setObjectives([], []);
+      $('clockDate').textContent = WM.formatDay(snap.t);
+      $('clockHour').textContent = WM.formatHour(snap.t);
+      $('rpSeek').value = String(i);
+      $('rpDay').textContent = `Day ${Math.floor(snap.t / 24) + 1} of ${Math.floor(st.history[st.history.length - 1].t / 24) + 1}`;
+      this.mapDirty = true;
+    }
+
+    replayFrame(dt) {
+      const rp = this.replay, n = this.st.history.length;
+      if (rp.playing) {
+        const before = Math.floor(rp.pos);
+        rp.pos = Math.min(n - 1, rp.pos + dt * rp.rate);
+        if (Math.floor(rp.pos) !== before) this.showReplay(Math.floor(rp.pos));
+        if (rp.pos >= n - 1) { rp.playing = false; $('rpPlay').textContent = 'Play'; }
+      }
+      document.querySelectorAll('#replayBar [data-rate]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.rate === rp.rate)));
+      if (this.mapDirty) { this.renderer.render(this.view); this.mapDirty = false; }
+      if (this.overlayDirty) {
+        this.overlay.draw(this.view, { showLabels: this.st.showLabels, showProvinces: this.st.showProvinces });
+        this.overlayDirty = false;
+      }
+    }
+
     // ------------------------------------------------------------- frame ---
     frame(now) {
       const st = this.st, war = this.war;
       const dt = Math.min(0.25, Math.max(0, (now - this.last) / 1000));
       this.last = now;
       const modalOpen = !$('attackModal').hidden;
+      if (this.replay) { this.replayFrame(dt); requestAnimationFrame((t) => this.frame(t)); return; }
 
       if (!st.paused && !this.dialogOpen()) {
         const dh = dt / SPEEDS[st.speed].sph;
@@ -1125,6 +1250,7 @@
         const before = war.ops.length, forts = war.forts.length;
         war.step(dh, st.time, events);
         st.time += dh;
+        this.snapshot();
         if (this.ai && !st.over) this.ai.update(st.time, events);
         if (events.length) this.handleEvents(events);
         if (war.ops.length !== before || war.forts.length !== forts) this.opsChanged();

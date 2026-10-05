@@ -25,11 +25,11 @@
   WM.START_ARMY = [0, 260000, 150000];
   WM.START_MORALE = [0, 0.8, 0.88];
 
-  const VMAX = 9;          // km/h, unopposed advance over open ground
-  const VMAX_CAP = 5;      // km/h, fastest any sector can move (cavalry pace)
+  const VMAX = 1.6;        // km/h, unopposed advance (~25-40 km a day incl. halts)
+  const VMAX_CAP = 0.9;    // km/h, fastest sustained sector pace
   const STEP = 0.1;        // h, longest simulation sub-step
   const HOLD_SHARE = 0.3;  // share of an offensive's men holding the wider front
-  const LOSS_RATE = 0.0011;
+  const LOSS_RATE = 0.0003;
   const KILLED_SHARE = 0.3;
   const CODENAMES = ['Rostam', 'Simurgh', 'Kaveh', 'Arash', 'Sohrab', 'Damavand', 'Esfandiar', 'Zagros', 'Anahita',
     'Bahram', 'Alborz', 'Karun', 'Fereydun', 'Siavash', 'Gordafarid', 'Jamshid', 'Mithra', 'Tahmineh', 'Kay Khosrow',
@@ -172,6 +172,7 @@
       this.fortId = new Int16Array(N);
       this.forts = [];
       this.fortCounter = 0;
+      this.weak = [];
       // Recruitment multipliers per side (campaign difficulty).
       this.recruitBonus = [0, 1, 1];
       if (!this.quiet) {
@@ -488,6 +489,8 @@
       op.defBase = (op.defPool / op.frontKm) * armyD * (0.75 + 0.35 * sD.morale) * (1 - 0.3 * sD.fatigue) + 4;
       const mA = (0.75 + 0.35 * sA.morale) * (1 - 0.35 * sA.fatigue);
       const fort = this.fort;
+      this.weak = this.weak.filter((z) => z.until > t);
+      const weak = this.weak.filter((z) => z.side === D);
 
       let lossA = 0, lossD = 0;
       for (let i = 0; i < op.frontN;) {
@@ -515,7 +518,9 @@
         const pa = (op.holdDen + focus) * op.att[l] * mA * sector;
         const outflank = 1 + 0.75 * Math.max(0, nA - 2.4);
         const cut = pocket ? 1 - Math.min(0.75, pocket[c] / 72) : 1;
-        const pd = (op.defBase * (1 + 0.9 * react) * defMod[c] * cut * (1 + 2.6 * fort[c])) / outflank + counter;
+        let shaken = 1;
+        for (const z of weak) if ((x - z.gx) ** 2 + (y - z.gy) ** 2 < z.r * z.r) shaken = 0.55;
+        const pd = (op.defBase * shaken * (1 + 0.9 * react) * defMod[c] * cut * (1 + 2.6 * fort[c])) / outflank + counter;
         const ratio = pa / pd;
         let gv = 0;
         if (ratio < 0.4) {
@@ -761,11 +766,11 @@
       }
       const ago = op.hist[0];
       op.trend = t - ago[0] > 2 ? ((done - ago[1]) / (t - ago[0])) * 24 : 0.2;
-      const culminated = t - op.t0 > 36 && t - ago[0] >= 23 && done - ago[1] < 0.006;
+      const culminated = t - op.t0 > 168 && t - ago[0] >= 23 && done - ago[1] < 0.0012;
       if (op.remaining <= 0 || (done >= 0.96 && (t - op.lastGain > 6 || culminated))) return this.endOp(op, 'success', t, events);
       if (culminated) return this.endOp(op, done >= 0.85 ? 'success' : 'stalled', t, events);
       if (op.troops < 0.12 * op.troops0) return this.endOp(op, 'exhausted', t, events);
-      if (t - op.lastGain > 48) return this.endOp(op, 'stalled', t, events);
+      if (t - op.lastGain > 168) return this.endOp(op, 'stalled', t, events);
       if (!op.frontN && t - op.lastGain > 3) {
         // Remaining objective cut off from our lines (an island or enclave): land there.
         const { w } = this.world;
@@ -805,9 +810,51 @@
       events.push({ t, side: op.side, kind: 'op', text, opEnd: reason });
     }
 
+    // Calling off an attack is not free: the retreat costs men, and the
+    // sector it falls back to is shaken for two days, easy to attack.
     halt(op, t, events) {
-      if (!op.ended) this.endOp(op, 'halted', t, events);
+      if (!op.ended) {
+        const lost = op.troops * 0.08;
+        this.applyLosses(op, lost, 0, false);
+        const b = this.battles().find((x) => x.op === op);
+        if (b) {
+          const [x, y] = b.at;
+          this.weak.push({ side: op.side, gx: (x - this.world.x0) / this.world.cell, gy: (y - this.world.y0) / this.world.cell, r: 30, until: t + 168 });
+        }
+        this.endOp(op, 'halted', t, events);
+        if (events && !this.quiet && lost > 50) {
+          events.push({ t, side: op.side, kind: 'battle', text: `The retreat from Operation ${op.name} costs ${WM.SIDE_NAME[op.side]} ${Math.round(lost).toLocaleString('en-US')} men; the line there is shaken.` });
+        }
+      }
       this.ops = this.ops.filter((o) => !o.ended);
+    }
+
+    // Pull men out of a battle back into the reserve.
+    withdraw(op, n, side) {
+      if (op.ended) return 0;
+      if (side === op.side) {
+        const k = Math.max(0, Math.min(n, op.troops - 3000));
+        op.troops -= k; op.troops0 = Math.max(op.troops, op.troops0 - k);
+        return k;
+      }
+      const k = Math.max(0, Math.min(n, op.defPool - 1500));
+      op.defPool -= k; op.defPool0 = Math.max(op.defPool, op.defPool0 - k);
+      return k;
+    }
+
+    // Defenders who are winning strike back: a plan to retake the ground this
+    // attack has taken. Returns null if it has taken nothing.
+    counterPlan(op) {
+      const world = this.world, side = op.enemy;
+      const mask = new Uint8Array(world.N), cells = [];
+      let area = 0;
+      for (const c of op.objCells) if (this.owner[c] === op.side) { mask[c] = 1; cells.push(c); area += world.rowArea[(c / world.w) | 0]; }
+      if (cells.length < 6) return null;
+      return {
+        ok: true, attacker: side, enemy: op.side, mode: 'front', mask, cells: Int32Array.from(cells), area,
+        cities: world.cities.filter((ct) => mask[ct.cell]).map((ct) => ct.name), provinces: [],
+        D: world.distanceFrom(side), path: op.path, extensions: [], canFlip: false, flipped: false,
+      };
     }
 
     // Pockets: territory fully surrounded by the enemy loses supply, fights

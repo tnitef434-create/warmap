@@ -67,7 +67,8 @@
       <footer class="cmd-foot">
         <label><input type="checkbox" id="optLabels" checked> Towns</label>
         <label><input type="checkbox" id="optProvinces" checked> Provinces</label>
-        <button type="button" class="link" id="btnMenu">Menu</button>
+        <button type="button" class="link" id="btnReplay">Timelapse</button>
+        <button type="button" class="link link-tight" id="btnMenu">Menu</button>
       </footer>
     </section>
 
@@ -134,6 +135,19 @@
   </div>
   <button type="button" class="show-ui" id="showUi" hidden>Show interface <kbd>H</kbd></button>
 
+  <div class="replay-bar" id="replayBar" hidden>
+    <span class="rp-title">Timelapse</span>
+    <button type="button" id="rpPlay">Pause</button>
+    <div class="seg" role="group" aria-label="Replay speed">
+      <button type="button" data-rate="1.5">Slow</button>
+      <button type="button" data-rate="8">Fast</button>
+      <button type="button" data-rate="30">Very fast</button>
+    </div>
+    <input type="range" id="rpSeek" min="0" max="1" value="0" aria-label="Replay position">
+    <span class="rp-day" id="rpDay"></span>
+    <button type="button" id="rpClose">Back to the war</button>
+  </div>
+
   <div class="hint ui" id="hint"></div>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
@@ -182,6 +196,7 @@
       <p id="endText"></p>
       <div class="actions">
         <button type="button" id="endWatch">Keep watching</button>
+        <button type="button" id="endReplay">Watch timelapse</button>
         <button type="button" class="primary" id="endNew">New game</button>
       </div>
     </div>
