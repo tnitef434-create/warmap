@@ -142,3 +142,11 @@ There are three ways to remove a defense line, and its garrison returns to the r
 - Right-click the line on the map.
 - With the Defense line tool selected, tap the line.
 - Press **Remove** next to it in the Defense lines list. **Remove all lines** clears every one of them.
+
+## Casualties
+
+Losses are permanent. Of the men lost in fighting, about 30% are killed and stay dead, and the **Killed** count only ever goes up.
+
+Wounded men can recover and rejoin, but only from the wounded pool. New soldiers come only from training.
+
+Every soldier in an attack, a defended sector or a defense line is part of the army. When deaths or surrenders leave fewer soldiers than are committed, those units shrink to match. Defenders are drawn only from soldiers who are actually free, and a counter-attack moves men rather than doubling them.

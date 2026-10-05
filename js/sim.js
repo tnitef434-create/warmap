@@ -266,7 +266,7 @@
     autoDefenders(side, sectorKm) {
       const free = this.available(side);
       const total = Math.max(this.frontLength(side), sectorKm, 50);
-      return Math.max(1500, free * clamp((1.7 * sectorKm) / total, 0.1, 0.55));
+      return Math.min(free, Math.max(1500, free * clamp((1.7 * sectorKm) / total, 0.1, 0.55)));
     }
     // Send more men into a battle, as attackers or defenders.
     reinforce(op, n, side) {
@@ -278,7 +278,37 @@
     }
     // Men the defender can put into a new sector of the front.
     defendersFor(side, wanted) {
-      return Math.min(wanted, Math.max(this.available(side) * 0.8, wanted * 0.25, 0));
+      // Only men who exist and are free can defend: nobody is conjured up.
+      const free = this.available(side);
+      return Math.min(wanted, free, Math.max(free * 0.8, wanted * 0.25));
+    }
+    // Every man in a battle or on a line belongs to the army. When losses or
+    // surrenders leave fewer soldiers than are committed, the units shrink to
+    // match, so the dead and the captured can never fight on.
+    enforceArmy(side) {
+      const army = this.sides[side].army;
+      const committed = this.deployed(side) + this.defending(side) + this.garrison(side);
+      if (committed <= army + 0.5) return;
+      const k = committed > 0 ? Math.max(0, army) / committed : 0;
+      for (const op of this.ops) {
+        if (op.side === side) op.troops *= k;
+        if (op.enemy === side) op.defPool *= k;
+      }
+      for (const f of this.forts) if (f.side === side) f.garrison *= k;
+    }
+    // Defenders who are winning strike back with half their men. The men left
+    // facing the old attack come out of that attack, so nobody is counted twice.
+    counterAttack(op, t, seed) {
+      const plan = this.counterPlan(op);
+      if (!plan) return null;
+      const troops = Math.round(op.defPool * 0.5);
+      const hold = Math.round(op.troops * 0.6);
+      op.defPool -= troops; op.defPool0 -= troops;
+      op.troops -= hold;
+      const c = this.launch(plan, WM.prepareOperation(this.world, plan, seed), { troops, defense: null, defenders: hold, t });
+      if (!c) { op.defPool += troops; op.defPool0 += troops; op.troops += hold; return null; }
+      op.countered = true;
+      return c;
     }
 
     local(op, c) {
@@ -441,6 +471,8 @@
       for (const op of this.ops) if (!op.ended) this.checkEnd(op, t, events);
       if (this.ops.some((o) => o.ended)) this.ops = this.ops.filter((o) => !o.ended);
       this.buildForts(h);
+      this.enforceArmy(1);
+      this.enforceArmy(2);
       if (this.quiet) return;
       for (const s of [1, 2]) {
         const S = this.sides[s];
@@ -916,7 +948,7 @@
       const prisoners = Math.round(Math.min(this.sides[S].army * 0.5, area * 2.2));
       for (const c of world.iranCells) if (labels[c] === id && this.owner[c] === S) this.flip(c, E, t, events, null);
       const sS = this.sides[S], sE = this.sides[E];
-      sS.army -= prisoners;
+      sS.army = Math.max(0, sS.army - prisoners);
       sS.captured += prisoners;
       sS.morale -= 0.04;
       sE.morale += 0.03;

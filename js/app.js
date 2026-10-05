@@ -846,14 +846,10 @@
         return;
       }
       if (act === 'counter') {
-        const plan = this.war.counterPlan(op);
-        if (!plan) { this.toast('The enemy has not taken any ground here yet.'); return; }
-        op.countered = true;
-        const troops = Math.round(op.defPool * 0.5);
-        op.defPool -= troops; op.defPool0 -= troops;
-        const c = this.war.launch(plan, WM.prepareOperation(this.world, plan, (Math.random() * 1e6) | 0), { troops, defense: null, defenders: Math.max(1500, op.troops * 0.6), t: st.time });
-        if (c) {
-          this.addLog({ t: st.time, side: c.side, kind: 'op', text: `Operation ${c.name}: ${WM.SIDE_NAME[c.side]} counter-attacks with ${fmt(troops)} of its defenders to retake the ground lost to Operation ${op.name}.` });
+        const c = this.war.counterAttack(op, st.time, (Math.random() * 1e6) | 0);
+        if (!c) { this.toast('The enemy has not taken any ground here yet.'); return; }
+        {
+          this.addLog({ t: st.time, side: c.side, kind: 'op', text: `Operation ${c.name}: ${WM.SIDE_NAME[c.side]} counter-attacks with ${fmt(c.troops)} of its defenders to retake the ground lost to Operation ${op.name}.` });
           this.opsChanged();
           this.toast(`Counter-attack launched: Operation ${c.name}.`);
         }

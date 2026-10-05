@@ -90,10 +90,19 @@ world.applyScenario();
 const war2 = new WM.War(world);
 const ais = [new WM.AI(war2, planner, WM.BLUE, 'normal'), new WM.AI(war2, planner, WM.RED, 'hard')];
 const ev2 = [];
+const lastKilled = [];
 t0 = performance.now();
 for (let h = 0; h < 24 * 20; h += 0.5) {
   war2.step(0.5, h, ev2);
   for (const ai of ais) ai.update(h + 0.5, ev2);
+  // The dead stay dead: killed only grows, and nobody fights who is not in the army.
+  for (const side of [1, 2]) {
+    const S = war2.sides[side];
+    const committed = war2.deployed(side) + war2.defending(side) + war2.garrison(side);
+    if (S.killed < (lastKilled[side] || 0) - 1e-6) { console.error(`killed went down for side ${side} at ${h} h`); process.exit(1); }
+    if (committed > S.army + 1) { console.error(`side ${side} has ${Math.round(committed)} men committed but an army of ${Math.round(S.army)} at ${h} h`); process.exit(1); }
+    lastKilled[side] = S.killed;
+  }
 }
 const k2 = {};
 for (const e of ev2) k2[e.kind] = (k2[e.kind] || 0) + 1;

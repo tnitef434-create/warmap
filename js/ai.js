@@ -58,14 +58,8 @@
       for (const op of war.ops.slice()) {
         if (op.enemy !== this.side || op.ended || op.countered) continue;
         if (t - op.t0 > 72 && op.defPool > 1.5 * op.troops && op.gained > 300 && this.rand() < 0.15 * this.cfg.reinforce) {
-          const plan = war.counterPlan(op);
-          if (!plan) continue;
-          op.countered = true;
-          const troops = Math.round(op.defPool * 0.5);
-          op.defPool -= troops; op.defPool0 -= troops;
-          const seed = (this.rand() * 1e6) | 0;
-          const c = war.launch(plan, WM.prepareOperation(this.world, plan, seed), { troops, defense: null, defenders: Math.max(1500, op.troops * 0.6), t });
-          if (c) events.push({ t, side: this.side, kind: 'alert', opStart: c.id, text: `Enemy counter-attack! Operation ${c.name}: ${fmt(troops)} ${WM.SIDE_NAME[this.side]} troops strike back against Operation ${op.name}.` });
+          const c = war.counterAttack(op, t, (this.rand() * 1e6) | 0);
+          if (c) events.push({ t, side: this.side, kind: 'alert', opStart: c.id, text: `Enemy counter-attack! Operation ${c.name}: ${fmt(c.troops)} ${WM.SIDE_NAME[this.side]} troops strike back against Operation ${op.name}.` });
         }
       }
       for (const op of war.ops) {
