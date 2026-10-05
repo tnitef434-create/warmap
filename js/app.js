@@ -1,4 +1,4 @@
-// Game controller: clock, camera, input, panels and the war's lifecycle.
+// Game controller: modes, clock, camera, input, panels and the war's lifecycle.
 (function (WM) {
   'use strict';
   const $ = (id) => document.getElementById(id);
@@ -10,11 +10,14 @@
     { label: '10×', sph: 1 },
     { label: '40×', sph: 0.25 },
   ];
-  const SAVE_KEY = 'warmap-iran-1902-v2';
+  const SAVE_KEY = 'warmap-iran-1902-v3';
   const MAX_PLANS = 8;
+  const REINFORCE = 5000;
   const MODE_LABEL = { front: 'Front-line offensive', encircle: 'Encirclement', thrust: 'Thrust (salient)' };
   const fmt = (v) => Math.round(Math.max(0, v)).toLocaleString('en-US');
   const short = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : v >= 1e4 ? `${Math.round(v / 1000)}k` : fmt(v));
+  const pct = (v) => `${Math.round(WM.clamp(v, 0, 1) * 100)}%`;
+  const other = (s) => (s === WM.BLUE ? WM.RED : WM.BLUE);
 
   const storage = {
     get() { try { return JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { return null; } },
@@ -22,21 +25,25 @@
     clear() { try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* storage unavailable */ } },
   };
 
-  // Rows of the forces table: label, value for one side, optional sub-row.
+  // Rows of the sandbox forces table: label, value for one side, sub-row?
   const FORCE_ROWS = [
     ['Territory', (s) => `${short(s.area)} km²`],
     ['share of Iran', (s) => `${(s.share * 100).toFixed(1)}%`, true],
     ['Population', (s) => short(s.pop)],
     ['Army', (s) => fmt(s.army)],
+    ['ready', (s) => fmt(s.available), true],
     ['attacking', (s) => fmt(s.deployed), true],
     ['defending sectors', (s) => fmt(s.defending), true],
+    ['on defense lines', (s) => fmt(s.garrison), true],
+    ['Training a day', (s) => `+${fmt(s.training)}`],
     ['Killed', (s) => fmt(s.killed)],
     ['Wounded', (s) => fmt(s.wounded)],
     ['Taken prisoner', (s) => fmt(s.captured)],
     ['Towns held', (s) => String(s.towns)],
     ['occupied', (s) => String(s.occupied), true],
     ['Provinces', (s) => String(s.provinces)],
-    ['Morale', (s) => `${Math.round(Math.min(1, s.morale / 1.2) * 100)}%`],
+    ['Readiness', (s) => pct(1 - s.fatigue / 0.9)],
+    ['Morale', (s) => pct(s.morale / 1.2)],
   ];
 
   class App {
@@ -48,68 +55,95 @@
       this.overlay = new WM.Overlay($('overlay'), world);
       this.st = {
         time: 0, speed: 0, paused: false,
-        side: 0, drawing: null, plans: [], planCounter: 0,
-        log: [], showLabels: true, showProvinces: true, uiHidden: false, winner: 0,
+        mode: 'sandbox', player: 0, level: 'normal',
+        side: 0, tool: 'attack', drawing: null, plans: [], planCounter: 0,
+        log: [], showLabels: true, showProvinces: true, uiHidden: false, winner: 0, over: false,
       };
       this.view = { cx: 0, cy: 0, scale: 1, dpr: 1, fitScale: 1, w: 1, h: 1 };
       this.mapDirty = this.overlayDirty = true;
       this.opRows = new Map();
       this.timers = { glow: 0, panels: 0, overlay: 0, save: performance.now() };
+      this.menuLevel = 'normal';
 
-      if (!this.restore()) this.newWar();
-      this.syncMap();
+      const resumed = this.restore();
+      // Nothing is saved until a game has been chosen from the menu.
+      this.started = resumed;
+      if (!resumed) this.newGame('sandbox', 0, 'normal', true);
 
       this.buildForcesTable();
       this.bindUI();
       this.bindInput();
       this.resize();
       this.fit();
-      this.refreshPanels();
+      this.syncMap();
+      this.applyMode();
       this.refreshSpeed();
-      this.refreshStats();
-      this.refreshOps();
       this.renderLog();
       new ResizeObserver(() => this.resize()).observe(this.el);
       if (window.matchMedia('(max-width: 980px)').matches) this.setDiary(true);
       document.addEventListener('visibilitychange', () => { if (document.hidden) this.save(); });
       window.addEventListener('pagehide', () => this.save());
+      if (!resumed) this.openMenu(false);
 
       this.last = performance.now();
       requestAnimationFrame((t) => this.frame(t));
       $('loading').classList.add('done');
     }
 
+    get campaign() { return this.st.mode === 'campaign'; }
+
     // ------------------------------------------------------------- state ---
-    newWar() {
+    newGame(mode, player, level, quiet) {
+      const st = this.st;
       this.world.applyScenario();
       this.war = new WM.War(this.world);
-      const st = this.st;
-      st.time = 0;
-      st.plans = []; st.side = 0; st.winner = 0;
-      st.log = [];
+      Object.assign(st, {
+        mode, player: mode === 'campaign' ? player : 0, level, time: 0, winner: 0, over: false,
+        plans: [], drawing: null, side: mode === 'campaign' ? player : 0, tool: 'attack', log: [], paused: false,
+      });
+      this.ai = mode === 'campaign' ? new WM.AI(this.war, this.planner, other(player), level) : null;
       const held = WM.START_RED_PROVINCES.slice(0, -1).join(', ') + ' and ' + WM.START_RED_PROVINCES.slice(-1);
       this.addLog({ t: 0, side: WM.RED, text: `Red forces hold ${held}, with ${fmt(WM.START_ARMY[WM.RED])} men under arms.` });
       this.addLog({ t: 0, side: WM.BLUE, text: `Blue holds the rest of the country and the capital, Tehran, with ${fmt(WM.START_ARMY[WM.BLUE])} men.` });
+      if (mode === 'campaign') {
+        this.addLog({
+          t: 0, side: player, kind: 'op',
+          text: `You command ${WM.SIDE_NAME[player]}. ${WM.SIDE_NAME[other(player)]} is led by the computer (${WM.DIFFICULTY[level].label.toLowerCase()}).`,
+        });
+      }
+      if (quiet) return;
+      this.started = true;
+      this.opRows.forEach((r) => r.li.remove());
+      this.opRows.clear();
+      this.syncMap();
+      this.applyMode();
+      this.renderLog();
+      this.fit();
+      this.save();
     }
 
     save() {
       const st = this.st;
+      if (!this.war || !this.started) return;
       storage.set({
-        v: 2, time: st.time, speed: st.speed, winner: st.winner,
-        owner: this.world.encodeOwner(), war: this.war.serialize(), log: st.log.slice(0, 150),
+        v: 3, mode: st.mode, player: st.player, level: st.level, time: st.time, speed: st.speed,
+        winner: st.winner, over: st.over, owner: this.world.encodeOwner(), war: this.war.serialize(),
+        ai: this.ai ? this.ai.save() : null, log: st.log.slice(0, 150),
       });
       this.timers.save = performance.now();
     }
 
     restore() {
       const s = storage.get();
-      if (!s || s.v !== 2 || !Array.isArray(s.owner)) return false;
+      if (!s || s.v !== 3 || !Array.isArray(s.owner)) return false;
       if (!this.world.decodeOwner(s.owner)) { this.world.applyScenario(); return false; }
       const st = this.st;
-      st.time = +s.time || 0;
-      st.speed = WM.clamp(s.speed | 0, 0, SPEEDS.length - 1);
-      st.winner = s.winner || 0;
-      st.log = Array.isArray(s.log) ? s.log : [];
+      Object.assign(st, {
+        mode: s.mode === 'campaign' ? 'campaign' : 'sandbox', player: s.player || 0, level: s.level || 'normal',
+        time: +s.time || 0, speed: WM.clamp(s.speed | 0, 0, SPEEDS.length - 1), winner: s.winner || 0, over: !!s.over,
+        log: Array.isArray(s.log) ? s.log : [],
+      });
+      st.side = st.mode === 'campaign' ? st.player : 0;
       this.war = new WM.War(this.world);
       try {
         this.war.restore(s.war, st.time);
@@ -117,6 +151,7 @@
         console.warn('Could not restore operations', e);
         this.war = new WM.War(this.world);
       }
+      this.ai = st.mode === 'campaign' ? new WM.AI(this.war, this.planner, other(st.player), st.level, s.ai) : null;
       return true;
     }
 
@@ -133,9 +168,33 @@
       this.war.syncHalo();
       this.renderer.setOwnership(this.war.display);
       this.war.dirty = false;
-      this.renderer.setObjectives(this.war.ops, this.st.plans);
+      this.refreshObjectives();
       this.renderer.setGlow();
       this.mapDirty = this.overlayDirty = true;
+    }
+
+    refreshObjectives() {
+      this.renderer.setObjectives(this.war.ops, this.st.plans.filter((e) => e.kind === 'attack'));
+      this.mapDirty = this.overlayDirty = true;
+    }
+
+    // Show the panels that belong to the current mode.
+    applyMode() {
+      const st = this.st, camp = this.campaign;
+      this.el.dataset.mode = st.mode;
+      $('modeChip').textContent = camp ? `Campaign · ${WM.DIFFICULTY[st.level].label}` : 'Sandbox';
+      $('sidesBox').hidden = camp;
+      $('commandBanner').hidden = !camp;
+      if (camp) {
+        $('commandBanner').dataset.side = st.player;
+        $('commandBanner').textContent = `You command ${WM.SIDE_NAME[st.player]}`;
+      }
+      $('armyCard').hidden = !camp;
+      $('sandboxStats').hidden = camp;
+      $('forcesTitle').textContent = camp ? 'Your army' : 'Forces';
+      this.refreshPanels();
+      this.refreshStats();
+      this.refreshOps();
     }
 
     // ------------------------------------------------------------ camera ---
@@ -307,8 +366,8 @@
       window.addEventListener('keydown', (e) => {
         if (e.target instanceof HTMLInputElement && e.target.type !== 'checkbox') return;
         if (e.target instanceof HTMLButtonElement && (e.key === ' ' || e.key === 'Enter')) return;
-        if (!$('attackModal').hidden) {
-          if (e.key === 'Escape') this.closeModal();
+        if (this.dialogOpen()) {
+          if (e.key === 'Escape') { if (!$('attackModal').hidden) this.closeModal(); else if (!$('menu').hidden) this.closeMenu(); }
           return;
         }
         const k = e.key.toLowerCase();
@@ -318,12 +377,19 @@
         else if (e.key === '-' || e.key === '_') this.zoomAt(this.view.w / 2, this.view.h / 2, 1 / 1.4);
         else if (k === 'f') this.fit();
         else if (k === 'h') this.toggleUi();
+        else if (k === 'a') this.setTool('attack');
+        else if (k === 'd') this.setTool('fort');
         else if (e.key === 'Escape') this.removePlan(this.st.plans.length ? this.st.plans[this.st.plans.length - 1].id : 0);
       });
     }
 
+    dialogOpen() {
+      return !$('attackModal').hidden || !$('menu').hidden || !$('endModal').hidden;
+    }
+
     canDraw() {
-      return this.st.side && $('attackModal').hidden && !this.st.winner;
+      const st = this.st;
+      return st.side && st.tool && !this.dialogOpen() && !st.over && !st.winner;
     }
 
     startDraw(x, y) {
@@ -336,7 +402,7 @@
       this.overlayDirty = true;
     }
 
-    // Every finished stroke becomes another planned line; nothing is replaced.
+    // Every finished stroke is added to the planned orders; nothing is replaced.
     endDraw() {
       const st = this.st;
       const path = st.drawing;
@@ -344,11 +410,15 @@
       this.overlayDirty = true;
       if (!path || path.length < 3) return;
       if (st.plans.length >= MAX_PLANS) {
-        this.toast(`You can plan up to ${MAX_PLANS} lines at once. Attack or remove one first.`);
+        this.toast(`You can plan up to ${MAX_PLANS} orders at once. Carry them out or remove one first.`);
         return;
       }
-      const entry = { id: ++st.planCounter, side: st.side, path, seed: (Math.random() * 1e6) | 0, plan: null };
-      if (!this.replan(entry, false)) return;
+      const entry = { id: ++st.planCounter, kind: st.tool, side: st.side, path, seed: (Math.random() * 1e6) | 0 };
+      if (entry.kind === 'fort') {
+        const f = this.planner.fortLine(entry.side, path, entry.seed);
+        if (!f.ok) { this.toast(f.reason); return; }
+        entry.fort = f;
+      } else if (!this.replan(entry, false)) return;
       st.plans.push(entry);
       this.setTab('command');
       this.plansChanged();
@@ -364,7 +434,7 @@
 
     flipPlan(id) {
       const entry = this.st.plans.find((e) => e.id === id);
-      if (entry && entry.plan.canFlip && this.replan(entry, !entry.plan.flipped)) this.plansChanged();
+      if (entry && entry.plan && entry.plan.canFlip && this.replan(entry, !entry.plan.flipped)) this.plansChanged();
     }
 
     removePlan(id) {
@@ -381,14 +451,14 @@
     }
 
     plansChanged() {
-      this.renderer.setObjectives(this.war.ops, this.st.plans);
-      this.mapDirty = this.overlayDirty = true;
+      this.refreshObjectives();
       this.refreshPanels();
     }
 
     // ---------------------------------------------------------------- UI ---
     bindUI() {
       document.querySelectorAll('.side').forEach((b) => b.addEventListener('click', () => this.selectSide(+b.dataset.side)));
+      document.querySelectorAll('.tool').forEach((b) => b.addEventListener('click', () => this.setTool(b.dataset.tool)));
       $('btnPause').addEventListener('click', () => this.togglePause());
       document.querySelectorAll('.spd').forEach((b) => b.addEventListener('click', () => this.setSpeed(+b.dataset.speed)));
       $('btnAttack').addEventListener('click', () => this.openModal());
@@ -399,6 +469,17 @@
         const id = +li.dataset.id;
         if (e.target.closest('.plan-flip')) this.flipPlan(id);
         else if (e.target.closest('.plan-remove')) this.removePlan(id);
+      });
+      $('fortList').addEventListener('click', (e) => {
+        const li = e.target.closest('.fort');
+        if (!li || !e.target.closest('.fort-remove')) return;
+        const f = this.war.forts.find((x) => x.id === +li.dataset.id);
+        if (!f) return;
+        this.war.removeFort(f.id);
+        this.addLog({ t: this.st.time, side: f.side, text: `${WM.SIDE_NAME[f.side]} abandons a defense line; ${fmt(f.garrison)} men return to the reserve.` });
+        this.overlayDirty = true;
+        this.refreshPanels();
+        this.refreshStats();
       });
       $('zoomIn').addEventListener('click', () => this.zoomAt(this.view.w / 2, this.view.h / 2, 1.5));
       $('zoomOut').addEventListener('click', () => this.zoomAt(this.view.w / 2, this.view.h / 2, 1 / 1.5));
@@ -421,35 +502,38 @@
         if (!li) return;
         const op = this.war.ops.find((o) => o.id === +li.dataset.id);
         if (!op) return;
-        if (e.target.closest('.op-halt')) this.haltOperation(op);
+        const act = e.target.closest('[data-act]');
+        if (act) this.opAction(op, act.dataset.act);
         else if (e.target.closest('.op-name')) {
           const b = this.war.battles().find((x) => x.op === op);
           if (b) this.centerOn(b.at);
         }
       });
-
-      const reset = $('btnReset');
-      reset.addEventListener('click', () => {
-        if (!reset.classList.contains('confirm')) {
-          reset.classList.add('confirm');
-          reset.textContent = 'Click again to restart';
-          clearTimeout(this.resetTimer);
-          this.resetTimer = setTimeout(() => { reset.classList.remove('confirm'); reset.textContent = 'New war'; }, 3500);
-          return;
-        }
-        clearTimeout(this.resetTimer);
-        reset.classList.remove('confirm');
-        reset.textContent = 'New war';
+      $('btnMenu').addEventListener('click', () => this.openMenu(true));
+      $('menuResume').addEventListener('click', () => this.closeMenu());
+      document.querySelectorAll('#menu [data-level]').forEach((b) => b.addEventListener('click', () => {
+        this.menuLevel = b.dataset.level;
+        document.querySelectorAll('#menu [data-level]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      }));
+      document.querySelectorAll('#menu [data-play]').forEach((b) => b.addEventListener('click', () => {
+        const p = +b.dataset.play;
+        this.closeMenu();
         storage.clear();
-        this.newWar();
-        this.syncMap();
-        this.refreshPanels();
-        this.refreshStats();
-        this.refreshOps();
-        this.renderLog();
-        this.save();
-        this.toast('A new war begins on 8 January 1902.');
-      });
+        this.newGame(p ? 'campaign' : 'sandbox', p, this.menuLevel);
+        this.toast(p ? `Campaign started. You command ${WM.SIDE_NAME[p]}; the enemy will strike soon.` : 'Sandbox: you give orders to both armies.');
+      }));
+      $('endWatch').addEventListener('click', () => { $('endModal').hidden = true; });
+      $('endNew').addEventListener('click', () => { $('endModal').hidden = true; this.openMenu(false); });
+    }
+
+    openMenu(canResume) {
+      $('menuResume').hidden = !canResume;
+      document.querySelectorAll('#menu [data-level]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.level === this.menuLevel)));
+      $('menu').hidden = false;
+    }
+
+    closeMenu() {
+      $('menu').hidden = true;
     }
 
     setTab(tab) {
@@ -473,8 +557,17 @@
 
     selectSide(side) {
       const st = this.st;
+      if (this.campaign) return;
       st.side = st.side === side ? 0 : side;
+      if (st.side && !st.tool) st.tool = 'attack';
       this.overlayDirty = true;
+      this.refreshPanels();
+    }
+
+    setTool(tool) {
+      const st = this.st;
+      if (!this.campaign && !st.side) { this.toast('Pick Blue or Red first.'); return; }
+      st.tool = st.tool === tool ? null : tool;
       this.refreshPanels();
     }
 
@@ -515,59 +608,113 @@
 
     refreshStats() {
       const s = this.war.stats();
-      FORCE_ROWS.forEach(([, get], i) => {
-        this.forceCells[i][0].textContent = get(s[1]);
-        this.forceCells[i][1].textContent = get(s[2]);
-      });
-      const pb = Math.round(s[1].power * 100);
-      $('powBlue').style.width = `${pb}%`;
-      $('powRed').style.width = `${100 - pb}%`;
-      $('powBlueTxt').textContent = `Blue ${pb}`;
-      $('powRedTxt').textContent = `${100 - pb} Red`;
-      $('readyBlue').textContent = `${fmt(s[1].available)} ready`;
-      $('readyRed').textContent = `${fmt(s[2].available)} ready`;
+      if (this.campaign) {
+        const me = s[this.st.player], foe = s[other(this.st.player)];
+        $('acReady').textContent = fmt(me.available);
+        $('acSplit').textContent = `${fmt(me.deployed)} attacking · ${fmt(me.defending)} defending · ${fmt(me.garrison)} on defense lines`;
+        $('acTrain').textContent = me.resting
+          ? `Training +${fmt(me.training)} a day. Resting: twice the usual rate.`
+          : `Training +${fmt(me.training)} a day. Stop attacking to train twice as fast.`;
+        const readiness = 1 - me.fatigue / 0.9;
+        $('acReadiness').style.width = pct(readiness);
+        $('acReadinessTxt').textContent = pct(readiness);
+        $('acMorale').style.width = pct(me.morale / 1.2);
+        $('acMoraleTxt').textContent = pct(me.morale / 1.2);
+        const mine = Math.round(me.share * 100);
+        $('acLandYou').style.width = `${mine}%`;
+        $('acLandFoe').style.width = `${100 - mine}%`;
+        $('acLandTxt').textContent = `You ${mine}% of Iran · Enemy ${100 - mine}%`;
+        $('acEnemy').textContent = `≈ ${fmt(Math.round(foe.army / 5000) * 5000)}`;
+        $('acKilled').textContent = `${fmt(me.killed)} · ${fmt(foe.killed)}`;
+        $('acTowns').textContent = `${me.towns} · ${foe.towns}`;
+        this.el.dataset.player = this.st.player;
+      } else {
+        FORCE_ROWS.forEach(([, get], i) => {
+          this.forceCells[i][0].textContent = get(s[1]);
+          this.forceCells[i][1].textContent = get(s[2]);
+        });
+        const pb = Math.round(s[1].power * 100);
+        $('powBlue').style.width = `${pb}%`;
+        $('powRed').style.width = `${100 - pb}%`;
+        $('powBlueTxt').textContent = `Blue ${pb}`;
+        $('powRedTxt').textContent = `${100 - pb} Red`;
+        $('readyBlue').textContent = `${fmt(s[1].available)} ready`;
+        $('readyRed').textContent = `${fmt(s[2].available)} ready`;
+      }
     }
 
     refreshPanels() {
-      const st = this.st;
-      this.el.classList.toggle('mode-plan', !!st.side);
+      const st = this.st, camp = this.campaign;
+      this.el.classList.toggle('mode-plan', !!(st.side && st.tool));
       this.el.dataset.side = st.side || '';
       document.querySelectorAll('.side').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.side === st.side)));
+      document.querySelectorAll('.tool').forEach((b) => {
+        b.setAttribute('aria-pressed', String(st.tool === b.dataset.tool && !!st.side));
+        b.disabled = !st.side;
+      });
       const plans = st.plans;
-      const hint = $('hint');
-      if (st.winner) {
-        $('planHint').textContent = `${WM.SIDE_NAME[st.winner]} controls all of Iran. Start a new war to play again.`;
-      } else if (plans.length) {
-        $('planHint').innerHTML = `${plans.length} ${plans.length === 1 ? 'line' : 'lines'} planned. Draw more, switch sides to plan the other army's attack too, then press <b>Attack</b> to launch them all at once.`;
-      } else if (!st.side) {
-        $('planHint').textContent = 'Pick a side, then draw lines into enemy land. You can draw several lines, for one side or both, and launch them together.';
-      } else {
-        const enemy = WM.SIDE_NAME[st.side === WM.BLUE ? WM.RED : WM.BLUE];
-        $('planHint').textContent = `Draw the line your troops should reach in ${enemy} territory. Everything between your front and the line becomes the objective. A loop encircles; a short stroke is a thrust. Draw more lines to attack in several places at once.`;
-      }
+      const enemy = st.side ? WM.SIDE_NAME[other(st.side)] : '';
+      let hint;
+      if (st.winner || st.over) hint = 'The war is over. Open the menu to start a new one.';
+      else if (plans.length) hint = `${plans.length} ${plans.length === 1 ? 'order' : 'orders'} planned. Draw more, then carry them out all at once.`;
+      else if (!st.side) hint = 'Pick a side, then draw attack lines or defense lines. You can plan several and launch them together, for one side or both.';
+      else if (st.tool === 'fort') hint = `Draw a defense line inside ${WM.SIDE_NAME[st.side]} land. Attacks that reach it face about three times the resistance. It needs ${WM.FORT_MEN_PER_KM} men per km and ${WM.FORT_BUILD_HOURS} hours to dig.`;
+      else if (st.tool === 'attack') hint = `Draw the line your troops should reach in ${enemy} territory. A loop encircles; a short stroke is a thrust. ${camp ? 'Right-drag pans.' : ''}`;
+      else hint = 'Pick Attack line or Defense line to draw. Drag the map to look around.';
+      $('planHint').textContent = hint;
       $('planList').replaceChildren(...plans.map((e, i) => {
-        const p = e.plan;
         const li = document.createElement('li');
         li.className = 'plan';
         li.dataset.id = e.id;
-        li.dataset.side = p.attacker;
-        const towns = p.cities.length ? ` · ${p.cities.slice(0, 2).join(', ')}${p.cities.length > 2 ? ` +${p.cities.length - 2}` : ''}` : '';
+        li.dataset.side = e.side;
         li.innerHTML = `<div class="plan-text"><span class="plan-title"></span><span class="plan-sub"></span></div>
           <button type="button" class="plan-flip" title="Take the other side of this line" aria-label="Flip objective">⇄</button>
-          <button type="button" class="plan-remove" title="Remove this line" aria-label="Remove line">×</button>`;
-        li.querySelector('.plan-title').textContent = `Line ${i + 1} · ${WM.SIDE_NAME[p.attacker]} → ${WM.SIDE_NAME[p.enemy]}`;
-        li.querySelector('.plan-sub').textContent = `${MODE_LABEL[p.mode]}${p.flipped ? ' (flipped)' : ''} · ${WM.formatKm2(p.area)}${towns}`;
-        li.querySelector('.plan-flip').disabled = !p.canFlip;
+          <button type="button" class="plan-remove" title="Remove" aria-label="Remove">×</button>`;
+        if (e.kind === 'fort') {
+          li.querySelector('.plan-title').textContent = `${i + 1} · Defense line · ${WM.SIDE_NAME[e.side]}`;
+          li.querySelector('.plan-sub').textContent = `${Math.round(e.fort.km)} km · ${fmt(e.fort.garrison)} men · ${WM.FORT_BUILD_HOURS} h to dig`;
+          li.querySelector('.plan-flip').hidden = true;
+        } else {
+          const p = e.plan;
+          const towns = p.cities.length ? ` · ${p.cities.slice(0, 2).join(', ')}${p.cities.length > 2 ? ` +${p.cities.length - 2}` : ''}` : '';
+          li.querySelector('.plan-title').textContent = `${i + 1} · Attack · ${WM.SIDE_NAME[p.attacker]} → ${WM.SIDE_NAME[p.enemy]}`;
+          li.querySelector('.plan-sub').textContent = `${MODE_LABEL[p.mode]}${p.flipped ? ' (flipped)' : ''} · ${WM.formatKm2(p.area)}${towns}`;
+          li.querySelector('.plan-flip').disabled = !p.canFlip;
+        }
         return li;
       }));
       $('planList').hidden = !plans.length;
-      $('planActions').hidden = !plans.length && !st.side;
+      $('planActions').hidden = !plans.length;
+      const nA = plans.filter((e) => e.kind === 'attack').length, nF = plans.length - nA;
+      $('btnAttack').textContent = !nF ? (nA > 1 ? `Attack with all ${nA}` : 'Attack')
+        : !nA ? (nF > 1 ? `Build ${nF} defense lines` : 'Build defense line') : `Carry out all ${plans.length} orders`;
       $('btnAttack').disabled = !plans.length;
-      $('btnAttack').textContent = plans.length > 1 ? `Attack with all ${plans.length}` : 'Attack';
       $('btnClear').disabled = !plans.length;
-      hint.textContent = st.side
+      this.refreshForts();
+      $('hint').textContent = st.side && st.tool
         ? 'Drag to draw · Right-drag or two fingers to pan · Scroll to zoom · H hides the interface'
         : 'Drag to pan · Scroll to zoom · Space pauses · 1–4 speed · H hides the interface';
+    }
+
+    refreshForts() {
+      const st = this.st;
+      const forts = this.war.forts.filter((f) => !this.campaign || f.side === st.player);
+      $('fortBox').hidden = !forts.length;
+      $('fortList').replaceChildren(...forts.map((f) => {
+        const li = document.createElement('li');
+        li.className = 'fort';
+        li.dataset.id = f.id;
+        li.dataset.side = f.side;
+        const town = this.world.nearestTown(...this.gridOf(f.path[Math.floor(f.path.length / 2)]));
+        li.innerHTML = '<span class="fort-text"></span><button type="button" class="fort-remove" title="Abandon this line; its men return to the reserve" aria-label="Abandon defense line">×</button>';
+        const state = f.built < 1 ? `digging ${Math.round(f.built * 100)}%` : f.breached ? 'breached' : 'ready';
+        li.querySelector('.fort-text').textContent = `${this.campaign ? '' : WM.SIDE_NAME[f.side] + ' · '}near ${town ? town.name : '?'} · ${fmt(f.garrison)} men · ${state}`;
+        return li;
+      }));
+    }
+
+    gridOf([x, y]) {
+      return [(x - this.world.x0) / this.world.cell, (y - this.world.y0) / this.world.cell];
     }
 
     // Operations list, updated in place so buttons keep focus and hover.
@@ -575,6 +722,7 @@
       const list = $('opsList');
       const ops = this.war.ops;
       const seen = new Set();
+      const camp = this.campaign, me = this.st.player;
       for (const op of ops) {
         seen.add(op.id);
         let row = this.opRows.get(op.id);
@@ -583,10 +731,17 @@
           li.className = 'op';
           li.dataset.id = op.id;
           li.dataset.side = op.side;
-          li.innerHTML = `<div class="op-head"><button type="button" class="op-name link-like"></button><span class="op-status"></span></div>
+          const ours = !camp || op.side === me;
+          if (camp && !ours) li.classList.add('enemy');
+          const acts = !camp
+            ? '<button type="button" data-act="att">+5,000 attackers</button><button type="button" data-act="def">+5,000 defenders</button><button type="button" data-act="halt">Halt</button>'
+            : ours
+              ? '<button type="button" data-act="att">Send 5,000 more</button><button type="button" data-act="halt">Halt</button>'
+              : '<button type="button" data-act="def">Send 5,000 defenders</button>';
+          li.innerHTML = `<div class="op-head"><button type="button" class="op-name"></button><span class="op-status"></span></div>
             <div class="op-sub"></div><div class="progress"><i></i></div>
             <div class="op-nums"><span>Attackers</span><span class="n-att"></span><span>Defenders</span><span class="n-def"></span><span>Killed</span><span class="n-kill"></span><span>Ground taken</span><span class="n-area"></span></div>
-            <button type="button" class="op-halt">Halt offensive</button>`;
+            <div class="op-acts">${acts}</div>`;
           li.querySelector('.op-name').textContent = `Operation ${op.name}`;
           list.prepend(li);
           row = {
@@ -601,7 +756,8 @@
         row.status.textContent = label;
         row.status.dataset.s = key;
         const day = Math.floor(age / 24) + 1, hour = Math.floor(age % 24);
-        row.sub.textContent = `${WM.SIDE_NAME[op.side]} → ${WM.SIDE_NAME[op.enemy]} · day ${day}, ${hour} h${op.counter ? ' · under counter-attack' : ''}`;
+        const who = camp ? (op.side === me ? 'Your attack' : 'Enemy attack on you') : `${WM.SIDE_NAME[op.side]} → ${WM.SIDE_NAME[op.enemy]}`;
+        row.sub.textContent = `${who} · day ${day}, ${hour} h${op.counter ? ' · counter-attack under way' : ''}`;
         row.bar.style.width = `${((1 - op.remaining / op.total) * 100).toFixed(1)}%`;
         row.att.textContent = `${fmt(op.troops)} / ${fmt(op.troops0)}`;
         row.def.textContent = `${fmt(op.defPool)} / ${fmt(op.defPool0)}`;
@@ -612,8 +768,26 @@
         if (!seen.has(id)) { row.li.remove(); this.opRows.delete(id); }
       }
       $('opsEmpty').hidden = ops.length > 0;
+      $('opsEmpty').textContent = camp ? 'No battles right now. Rest to train soldiers, dig defense lines, or attack.' : 'No offensives under way. Pick a side and draw a line into enemy land.';
       $('opsCount').textContent = ops.length ? `${ops.length} active` : '';
       $('tabOps').textContent = ops.length ? String(ops.length) : '';
+    }
+
+    opAction(op, act) {
+      const st = this.st;
+      if (act === 'halt') { this.haltOperation(op); return; }
+      const side = act === 'att' ? op.side : op.enemy;
+      const n = this.war.reinforce(op, REINFORCE, side);
+      if (!n) {
+        this.toast(`${WM.SIDE_NAME[side]} has no soldiers ready. Rest the army to train more, or halt an attack.`);
+        return;
+      }
+      const text = act === 'att'
+        ? `${WM.SIDE_NAME[side]} sends ${fmt(n)} more men into Operation ${op.name}.`
+        : `${WM.SIDE_NAME[side]} sends ${fmt(n)} reserves to hold against Operation ${op.name}.`;
+      this.addLog({ t: st.time, side, text });
+      this.refreshOps();
+      this.refreshStats();
     }
 
     renderLog() {
@@ -640,39 +814,52 @@
       this.logDirty = false;
     }
 
-    toast(msg) {
+    toast(msg, alert) {
       if (this.st.uiHidden) return;
       const t = $('toast');
       t.textContent = msg;
+      t.dataset.alert = alert ? 'true' : 'false';
       t.hidden = false;
       clearTimeout(this.toastTimer);
-      this.toastTimer = setTimeout(() => { t.hidden = true; }, 4500);
+      this.toastTimer = setTimeout(() => { t.hidden = true; }, alert ? 6500 : 4500);
     }
 
-    // ------------------------------------------------------- offensives ---
-    // One section per planned line: troops, enemy defense and a forecast.
+    // ---------------------------------------------------------- orders ---
+    // One section per planned order: attacks get troops (and, in the sandbox,
+    // the enemy's defense strength) plus a forecast; defense lines show cost.
     openModal() {
       const st = this.st, war = this.war;
       if (!st.plans.length) return;
-      for (const e of st.plans) if (!e.prep) e.prep = WM.prepareOperation(this.world, e.plan, e.seed);
-      // Suggested commitments, scaled down if a side's lines need more than it has.
+      const attacks = st.plans.filter((e) => e.kind === 'attack');
+      for (const e of attacks) if (!e.prep) e.prep = WM.prepareOperation(this.world, e.plan, e.seed);
+      this.frontKm = [0, war.frontLength(1), war.frontLength(2)];
       for (const side of [1, 2]) {
-        const mine = st.plans.filter((e) => e.plan.attacker === side);
+        const mine = attacks.filter((e) => e.side === side);
         if (!mine.length) continue;
-        const avail = Math.floor(war.available(side) / 1000) * 1000;
+        const forts = st.plans.filter((e) => e.kind === 'fort' && e.side === side).reduce((n, e) => n + e.fort.garrison, 0);
+        const budget = Math.max(0, war.available(side) - forts) * 0.7;
         mine.forEach((e) => { e.troops = Math.max(5000, Math.round((e.prep.frontKm0 * 120) / 1000) * 1000); });
-        const total = mine.reduce((n, e) => n + e.troops, 0), budget = avail * 0.7;
+        const total = mine.reduce((n, e) => n + e.troops, 0);
         if (total > budget) mine.forEach((e) => { e.troops = Math.max(5000, Math.floor((e.troops * budget) / total / 1000) * 1000); });
       }
       st.plans.forEach((e) => { if (!e.defense) e.defense = 50; });
-      const n = st.plans.length;
-      $('amTitle').textContent = n === 1 ? `Operation ${war.nextName(0)}` : `${n} operations, launched together`;
+      let k = 0;
       $('amPlans').replaceChildren(...st.plans.map((e, i) => {
-        const p = e.plan;
         const sec = document.createElement('section');
         sec.className = 'am-plan';
         sec.dataset.id = e.id;
-        sec.dataset.side = p.attacker;
+        sec.dataset.side = e.side;
+        if (e.kind === 'fort') {
+          const town = this.world.nearestTown(...this.gridOf(e.fort.path[Math.floor(e.fort.path.length / 2)]));
+          sec.innerHTML = `<h3 class="am-op"><span class="am-name"></span><span class="am-side"></span></h3>
+            <p class="am-sub"></p><p class="am-fort"></p>`;
+          sec.querySelector('.am-name').textContent = 'Defense line';
+          sec.querySelector('.am-side').textContent = WM.SIDE_NAME[e.side];
+          sec.querySelector('.am-sub').textContent = `${i + 1} · ${Math.round(e.fort.km)} km near ${town ? town.name : 'the front'}`;
+          sec.querySelector('.am-fort').textContent = `${fmt(e.fort.garrison)} men are stationed on it for good. It takes ${WM.FORT_BUILD_HOURS} hours to dig; once ready, attackers face about three times the resistance there.`;
+          return sec;
+        }
+        const p = e.plan;
         const towns = p.cities.length;
         sec.innerHTML = `
           <h3 class="am-op"><span class="am-name"></span><span class="am-side"></span></h3>
@@ -680,9 +867,11 @@
           <label class="am-label"><span>Troops committed</span><output class="o-troops"></output></label>
           <input type="range" class="i-troops" min="5000" step="1000" aria-label="Troops committed">
           <div class="am-scale" aria-hidden="true"><span>5,000</span><span class="o-max"></span></div>
-          <label class="am-label"><span>Enemy defense strength</span><output class="o-def"></output></label>
-          <input type="range" class="i-def" min="1" max="100" aria-label="Enemy defense strength">
-          <div class="am-scale" aria-hidden="true"><span>Militia</span><span>Fortified line</span></div>
+          <div class="sandbox-only">
+            <label class="am-label"><span>Enemy defense strength</span><output class="o-def"></output></label>
+            <input type="range" class="i-def" min="1" max="100" aria-label="Enemy defense strength">
+            <div class="am-scale" aria-hidden="true"><span>Militia</span><span>Fortified line</span></div>
+          </div>
           <div class="am-tier"><span class="o-tier"></span><span class="am-def o-defenders"></span></div>
           <dl class="facts">
             <dt>Force ratio</dt><dd class="o-ratio"></dd>
@@ -691,16 +880,23 @@
             <dt>Our losses</dt><dd class="o-loss"></dd>
             <dt>Enemy losses</dt><dd class="o-eloss"></dd>
           </dl>`;
-        sec.querySelector('.am-name').textContent = `Operation ${war.nextName(i)}`;
+        sec.querySelector('.sandbox-only').hidden = this.campaign;
+        sec.querySelector('.am-name').textContent = `Operation ${war.nextName(k++)}`;
         sec.querySelector('.am-side').textContent = `${WM.SIDE_NAME[p.attacker]} → ${WM.SIDE_NAME[p.enemy]}`;
-        sec.querySelector('.am-sub').textContent = `Line ${i + 1} · ${MODE_LABEL[p.mode]} · ${WM.formatKm2(p.area)} · ${towns} ${towns === 1 ? 'town' : 'towns'}`;
+        sec.querySelector('.am-sub').textContent = `${i + 1} · ${MODE_LABEL[p.mode]} · ${WM.formatKm2(p.area)} · ${towns} ${towns === 1 ? 'town' : 'towns'}`;
         const ti = sec.querySelector('.i-troops');
         ti.max = String(Math.max(5000, Math.floor(war.available(p.attacker) / 1000) * 1000));
         ti.value = String(e.troops);
         sec.querySelector('.i-def').value = String(e.defense);
         return sec;
       }));
-      $('amLaunch').textContent = n === 1 ? 'Launch attack' : `Launch all ${n} attacks`;
+      const nA = attacks.length, nF = st.plans.length - nA;
+      $('amTitle').textContent = st.plans.length === 1
+        ? (nA ? `Operation ${war.nextName(0)}` : 'Defense line')
+        : `${st.plans.length} orders, carried out together`;
+      $('amLaunch').textContent = !nF ? (nA > 1 ? `Launch all ${nA} attacks` : 'Launch attack')
+        : !nA ? (nF > 1 ? `Build ${nF} lines` : 'Build defense line') : `Carry out all ${st.plans.length}`;
+      $('amNote').hidden = !nA;
       $('attackModal').hidden = false;
       this.refreshEstimates(0);
       this.overlayDirty = true;
@@ -716,45 +912,56 @@
       this.overlayDirty = true;
     }
 
-    // Reads every section, keeps each side's lines within the men it has
+    // Reads every section, keeps each side's orders within the men it has
     // ready, works out the defenders each sector would get when launched in
     // order, and restarts the forecasts.
     refreshEstimates(changedId) {
       const st = this.st, war = this.war;
       const secs = new Map([...$('amPlans').querySelectorAll('.am-plan')].map((el) => [+el.dataset.id, el]));
-      for (const e of st.plans) {
+      const attacks = st.plans.filter((e) => e.kind === 'attack');
+      for (const e of attacks) {
         const el = secs.get(e.id);
         e.troops = +el.querySelector('.i-troops').value;
         e.defense = +el.querySelector('.i-def').value;
       }
+      const cost = (e) => (e.kind === 'fort' ? e.fort.garrison : e.troops);
       const ready = [0, war.available(1), war.available(2)];
       let short = '';
       for (const side of [1, 2]) {
-        const mine = st.plans.filter((e) => e.plan.attacker === side);
+        const mine = st.plans.filter((e) => e.side === side);
         for (const e of mine) {
-          const others = mine.reduce((n, o) => n + (o === e ? 0 : o.troops), 0);
+          if (e.kind !== 'attack') continue;
+          const others = mine.reduce((n, o) => n + (o === e ? 0 : cost(o)), 0);
           const max = Math.max(5000, Math.floor((ready[side] - others) / 1000) * 1000);
           const input = secs.get(e.id).querySelector('.i-troops');
           input.max = String(max);
           if (e.troops > max && e.id === changedId) { e.troops = max; input.value = String(max); }
           secs.get(e.id).querySelector('.o-max').textContent = `${fmt(Math.max(0, ready[side] - others))} ready`;
         }
-        const total = mine.reduce((n, e) => n + e.troops, 0);
-        if (mine.length && total > ready[side]) short = `${WM.SIDE_NAME[side]} has only ${fmt(ready[side])} men ready for ${fmt(total)} committed. Lower the troops or remove a line.`;
+        const total = mine.reduce((n, e) => n + cost(e), 0);
+        if (mine.length && total > ready[side]) {
+          short = `${WM.SIDE_NAME[side]} has only ${fmt(ready[side])} soldiers ready for ${fmt(total)} needed. Lower the troops or remove an order.`;
+        }
       }
       // Launch order matters: each sector's defenders come out of what is left.
       const avail = ready.slice();
       for (const e of st.plans) {
+        if (e.kind === 'fort') { avail[e.side] -= e.fort.garrison; continue; }
         const p = e.plan;
-        const wanted = WM.sectorDefenders(e.prep, e.defense);
-        e.defenders = Math.min(wanted, Math.max(avail[p.enemy] * 0.8, wanted * 0.25, 0));
+        if (this.campaign) {
+          const share = WM.clamp((1.7 * e.prep.frontKm0) / Math.max(this.frontKm[p.enemy], e.prep.frontKm0, 50), 0.1, 0.55);
+          e.defenders = Math.max(1500, Math.max(0, avail[p.enemy]) * share);
+        } else {
+          const wanted = WM.sectorDefenders(e.prep, e.defense);
+          e.defenders = Math.min(wanted, Math.max(avail[p.enemy] * 0.8, wanted * 0.25, 0));
+        }
         avail[p.attacker] -= e.troops;
         avail[p.enemy] -= e.defenders;
         const el = secs.get(e.id);
         el.querySelector('.o-troops').textContent = fmt(e.troops);
         el.querySelector('.o-def').textContent = e.defense;
-        el.querySelector('.o-tier').textContent = WM.defenseTier(e.defense);
-        el.querySelector('.o-defenders').textContent = `≈ ${fmt(e.defenders)} defenders in the sector`;
+        el.querySelector('.o-tier').textContent = this.campaign ? 'Enemy defenders' : WM.defenseTier(e.defense);
+        el.querySelector('.o-defenders').textContent = `≈ ${fmt(e.defenders)} ${this.campaign ? 'men will meet you' : 'defenders in the sector'}`;
         const ratio = e.troops / Math.max(e.defenders, 1);
         el.querySelector('.o-ratio').textContent = ratio >= 1 ? `${ratio.toFixed(1)} : 1 in our favour` : `1 : ${(1 / ratio).toFixed(1)} against us`;
         el.querySelector('.o-outcome').textContent = 'Forecasting…';
@@ -767,10 +974,10 @@
       this.fcQueue = [];
       this.fc = null;
       clearTimeout(this.fcTimer);
-      this.fcTimer = setTimeout(() => { this.fcQueue = st.plans.slice(); }, changedId ? 220 : 0);
+      this.fcTimer = setTimeout(() => { this.fcQueue = attacks.slice(); }, changedId ? 220 : 0);
     }
 
-    // Forecasts run one line at a time, a few milliseconds per frame.
+    // Forecasts run one order at a time, a few milliseconds per frame.
     pumpForecasts() {
       if (!this.fc && this.fcQueue && this.fcQueue.length) {
         const e = this.fcQueue.shift();
@@ -786,46 +993,53 @@
     showForecast(entry, r) {
       const el = $('amPlans').querySelector(`.am-plan[data-id="${entry.id}"]`);
       if (!el || !r) return;
-      const pct = Math.round(r.progress * 100);
+      const pctTaken = Math.round(r.progress * 100);
       el.querySelector('.o-outcome').textContent = r.reason === 'success'
-        ? `Objective taken (${pct}%) in ≈ ${WM.formatDuration(r.hours)}`
+        ? `Objective taken (${pctTaken}%) in ≈ ${WM.formatDuration(r.hours)}`
         : r.reason === 'exhausted'
-          ? `Runs out of men at ${pct}% after ≈ ${WM.formatDuration(r.hours)}`
+          ? `Runs out of men at ${pctTaken}% after ≈ ${WM.formatDuration(r.hours)}`
           : r.reason === 'stalled'
-            ? `Bogs down at ${pct}% after ≈ ${WM.formatDuration(r.hours)}`
-            : `Still fighting at ${pct}% after ${WM.formatDuration(r.hours)}`;
+            ? `Bogs down at ${pctTaken}% after ≈ ${WM.formatDuration(r.hours)}`
+            : `Still fighting at ${pctTaken}% after ${WM.formatDuration(r.hours)}`;
       el.querySelector('.o-end').textContent = WM.formatStamp(this.st.time + r.hours);
       el.querySelector('.o-loss').textContent = `≈ ${fmt(r.lossAtt)} (${fmt(r.killedAtt)} killed)`;
       el.querySelector('.o-eloss').textContent = `≈ ${fmt(r.lossDef)} (${fmt(r.killedDef)} killed)`;
       for (const c of ['.o-outcome', '.o-end', '.o-loss', '.o-eloss']) el.querySelector(c).classList.remove('pending');
     }
 
-    // Every planned line becomes an operation at the same moment.
+    // Every planned order is carried out at the same moment.
     launch() {
-      const st = this.st;
+      const st = this.st, war = this.war;
       if (!st.plans.length) return;
       this.refreshEstimates(0);
       if ($('amLaunch').disabled) return;
-      const launched = [];
+      const done = [];
       for (const e of st.plans) {
-        const op = this.war.launch(e.plan, e.prep, { troops: e.troops, defense: e.defense, t: st.time });
+        if (e.kind === 'fort') {
+          const f = war.addFort(e.side, e.fort.cells, e.fort.path, e.fort.facing, e.fort.km, st.time);
+          if (!f) continue;
+          done.push('a defense line');
+          const town = this.world.nearestTown(...this.gridOf(f.path[Math.floor(f.path.length / 2)]));
+          this.addLog({ t: st.time, side: f.side, text: `${WM.SIDE_NAME[f.side]} starts digging a ${Math.round(f.km)} km defense line near ${town ? town.name : 'the front'} with ${fmt(f.garrison)} men.` });
+          continue;
+        }
+        const op = war.launch(e.plan, e.prep, { troops: e.troops, defense: this.campaign ? null : e.defense, defenders: e.defenders, t: st.time });
         if (!op) continue;
-        launched.push(op);
+        done.push(`Operation ${op.name}`);
         const att = WM.SIDE_NAME[op.side], en = WM.SIDE_NAME[op.enemy];
         const towns = e.plan.cities.length ? ` towards ${e.plan.cities.slice(0, 3).join(', ')}` : '';
         this.addLog({
           t: st.time, side: op.side, kind: 'op',
-          text: `Operation ${op.name}: ${att} attacks ${en}${towns} with ${fmt(e.troops)} men. About ${fmt(op.defPool0)} ${en} troops defend the sector (${WM.defenseTier(e.defense).toLowerCase()}).`,
+          text: `Operation ${op.name}: ${att} attacks ${en}${towns} with ${fmt(e.troops)} men. About ${fmt(op.defPool0)} ${en} troops defend the sector.`,
         });
       }
       this.closeModal();
       st.plans = [];
       this.plansChanged();
       this.opsChanged();
-      this.setTab('ops');
-      if (!launched.length) { this.toast('Those objectives are no longer held by the enemy. Draw new lines.'); return; }
-      const names = launched.map((o) => o.name).join(', ');
-      const what = launched.length === 1 ? `Operation ${names} launched.` : `${launched.length} operations launched together: ${names}.`;
+      if (done.some((d) => d.startsWith('Operation'))) this.setTab('ops');
+      if (!done.length) { this.toast('Those orders can no longer be carried out. Draw new lines.'); return; }
+      const what = done.length === 1 ? `${done[0]} under way.` : `${done.length} orders carried out together.`;
       this.toast(st.paused ? `${what} The clock is paused; press Space to start.` : what);
     }
 
@@ -837,49 +1051,62 @@
     }
 
     handleEvents(events) {
+      const st = this.st;
       events.sort((a, b) => a.t - b.t);
       for (const ev of events) {
         this.addLog(ev);
-        if (ev.kind === 'op') this.toast(ev.text.split(':')[0] + '.');
+        if (ev.kind === 'alert' && (!this.campaign || ev.side !== st.player)) this.toast(ev.text, true);
+        else if (ev.kind === 'op' && ev.opEnd) this.toast(ev.text.split(':')[0] + '.');
       }
       this.overlayDirty = true;
-      const s = this.war.sides;
-      if (!this.st.winner) {
-        for (const side of [1, 2]) {
-          const other = side === 1 ? 2 : 1;
-          if (s[other].area <= 1) {
-            this.st.winner = side;
-            this.addLog({ t: this.st.time, side, kind: 'op', text: `${WM.SIDE_NAME[side]} controls all of Iran. The war is over.` });
-            this.toast(`${WM.SIDE_NAME[side]} has won the war.`);
-            this.refreshPanels();
-          }
+      if (events.some((e) => e.opStart)) this.opsChanged();
+      this.checkVictory();
+    }
+
+    checkVictory() {
+      const st = this.st, s = this.war.sides;
+      if (st.winner) return;
+      for (const side of [1, 2]) {
+        if (s[other(side)].area > 1) continue;
+        st.winner = side;
+        st.over = true;
+        this.addLog({ t: st.time, side, kind: 'op', text: `${WM.SIDE_NAME[side]} controls all of Iran. The war is over.` });
+        if (this.campaign) {
+          const me = s[st.player], foe = s[other(st.player)];
+          const won = side === st.player;
+          $('endTitle').textContent = won ? 'Victory' : 'Defeat';
+          $('endText').textContent = `${won ? 'You' : 'The enemy'} took all of Iran after ${WM.formatDuration(st.time)}. You lost ${fmt(me.killed)} men killed; the enemy lost ${fmt(foe.killed)}.`;
+          $('endModal').dataset.won = String(won);
+          $('endModal').hidden = false;
+        } else {
+          this.toast(`${WM.SIDE_NAME[side]} has won the war.`);
         }
+        this.refreshPanels();
       }
     }
 
     opsChanged() {
-      this.renderer.setObjectives(this.war.ops, this.st.plans);
-      this.mapDirty = this.overlayDirty = true;
+      this.refreshObjectives();
       this.refreshOps();
       this.refreshStats();
+      this.refreshForts();
       this.save();
     }
 
-    // Battle labels glide to a new position when the main effort moves
-    // instead of jumping there.
+    // Battle labels glide when a sector's centre moves instead of jumping.
     smoothBattles(list) {
       const prev = this.labelPos || new Map();
       const next = new Map();
       for (const b of list) {
-        const p = prev.get(b.op.id);
+        const p = prev.get(b.key);
         if (p && Math.hypot(p.at[0] - b.at[0], p.at[1] - b.at[1]) < 400) {
           const k = 0.18;
           b.at = [p.at[0] + (b.at[0] - p.at[0]) * k, p.at[1] + (b.at[1] - p.at[1]) * k];
-          let dx = p.dir[0] + (b.dir[0] - p.dir[0]) * k, dy = p.dir[1] + (b.dir[1] - p.dir[1]) * k;
+          const dx = p.dir[0] + (b.dir[0] - p.dir[0]) * k, dy = p.dir[1] + (b.dir[1] - p.dir[1]) * k;
           const l = Math.hypot(dx, dy) || 1;
           b.dir = [dx / l, dy / l];
         }
-        next.set(b.op.id, { at: b.at, dir: b.dir });
+        next.set(b.key, { at: b.at, dir: b.dir });
       }
       this.labelPos = next;
       return list;
@@ -892,14 +1119,15 @@
       this.last = now;
       const modalOpen = !$('attackModal').hidden;
 
-      if (!st.paused && !modalOpen) {
+      if (!st.paused && !this.dialogOpen()) {
         const dh = dt / SPEEDS[st.speed].sph;
         const events = [];
-        const before = war.ops.length;
+        const before = war.ops.length, forts = war.forts.length;
         war.step(dh, st.time, events);
         st.time += dh;
+        if (this.ai && !st.over) this.ai.update(st.time, events);
         if (events.length) this.handleEvents(events);
-        if (war.ops.length !== before) this.opsChanged();
+        if (war.ops.length !== before || war.forts.length !== forts) this.opsChanged();
       }
       if (war.dirty) {
         war.syncHalo();
@@ -917,6 +1145,7 @@
         this.timers.panels = now;
         this.refreshStats();
         this.refreshOps();
+        if (war.forts.some((f) => f.built < 1)) { this.refreshForts(); this.overlayDirty = true; }
       }
       if (war.ops.length && now - this.timers.overlay > 120) {
         this.timers.overlay = now;
@@ -934,13 +1163,18 @@
         this.mapDirty = false;
       }
       if (this.overlayDirty) {
+        const plans = st.plans;
         this.overlay.draw(this.view, {
           time: st.time,
           ops: war.ops,
+          forts: war.forts,
+          fortId: war.fortId,
           drawSide: st.side,
+          drawTool: st.tool,
           drawing: st.drawing,
-          plans: st.plans.map((e) => e.plan),
-          planArrows: modalOpen ? st.plans.filter((e) => e.prep).map((e) => ({ side: e.plan.attacker, arrows: e.prep.arrows })) : null,
+          plans: plans.filter((e) => e.kind === 'attack').map((e) => e.plan),
+          fortPlans: plans.filter((e) => e.kind === 'fort').map((e) => e.fort),
+          planArrows: modalOpen ? plans.filter((e) => e.prep).map((e) => ({ side: e.side, arrows: e.prep.arrows })) : null,
           battles: this.smoothBattles(war.battles()),
           showLabels: st.showLabels,
           showProvinces: st.showProvinces,

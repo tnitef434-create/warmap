@@ -11,7 +11,7 @@ import path from 'node:path';
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 // The game scripts expect a browser `window`; run them in this global scope.
 globalThis.window = globalThis;
-for (const f of ['js/data/geo.js', 'js/data/grid.js', 'js/util.js', 'js/world.js', 'js/planner.js', 'js/sim.js']) {
+for (const f of ['js/data/geo.js', 'js/data/grid.js', 'js/util.js', 'js/world.js', 'js/planner.js', 'js/sim.js', 'js/ai.js']) {
   (0, eval)(fs.readFileSync(path.join(ROOT, f), 'utf8') + `\n//# sourceURL=${f}`);
 }
 const ctx = globalThis;
@@ -84,4 +84,25 @@ for (const e of events.filter((e) => e.kind !== 'town').slice(0, 14)) console.lo
 war.recount();
 const s2 = war.stats();
 if (Math.abs(s2[1].area - s[1].area) > 5 || s2[1].towns !== s[1].towns) { console.error('bookkeeping drift', s[1].area, s2[1].area, s[1].towns, s2[1].towns); process.exit(1); }
+
+// Campaign: two computer players fight for 20 days.
+world.applyScenario();
+const war2 = new WM.War(world);
+const ais = [new WM.AI(war2, planner, WM.BLUE, 'normal'), new WM.AI(war2, planner, WM.RED, 'hard')];
+const ev2 = [];
+t0 = performance.now();
+for (let h = 0; h < 24 * 20; h += 0.5) {
+  war2.step(0.5, h, ev2);
+  for (const ai of ais) ai.update(h + 0.5, ev2);
+}
+const k2 = {};
+for (const e of ev2) k2[e.kind] = (k2[e.kind] || 0) + 1;
+const s3 = war2.stats();
+console.log(`AI vs AI, 20 days in ${(performance.now() - t0).toFixed(0)} ms: events ${JSON.stringify(k2)}, forts ${war2.forts.length}, ops running ${war2.ops.length}`);
+for (const side of [1, 2]) {
+  const S = s3[side];
+  console.log(`  ${WM.SIDE_NAME[side]}: ${(S.share * 100).toFixed(1)}% of Iran, army ${Math.round(S.army)} (ready ${Math.round(S.available)}), killed ${Math.round(S.killed)}, training ${Math.round(S.training)}/day, readiness ${((1 - S.fatigue / 0.9) * 100).toFixed(0)}%`);
+}
+for (const e of ev2.filter((e) => e.kind === 'alert' || e.kind === 'op').slice(0, 10)) console.log(`  [${WM.formatStamp(e.t)}] ${e.text}`);
+if (!k2.alert) { console.error('the AI never attacked'); process.exit(1); }
 console.log('ok');

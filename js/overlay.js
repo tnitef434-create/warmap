@@ -65,6 +65,18 @@
       ctx.lineWidth = 1.35 * px;
       ctx.stroke(this.iran);
 
+      const world = this.world;
+      for (const f of st.forts || []) {
+        const fid = st.fortId;
+        this.drawFort(f.path, f.side, f.facing, px, f.built, (x, y) => {
+          const c = world.cellAt(x, y);
+          if (c < 0) return false;
+          // a vertex counts as long as a cell of this line survives next to it
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (fid[c + dy * world.w + dx] === f.id) return true;
+          return false;
+        });
+      }
+      for (const f of st.fortPlans || []) this.drawFort(f.path, f.side, f.facing, px, 0.35, null);
       for (const op of st.ops || []) {
         this.drawLine(op.path, op.side, px, 'objective');
         for (const seg of op.extensions || []) this.drawLine(seg, op.side, px, 'objective');
@@ -76,7 +88,7 @@
         this.drawLine(plan.path, plan.attacker, px, 'plan');
         for (const seg of plan.extensions || []) this.drawLine(seg, plan.attacker, px, 'extension');
       }
-      if (st.drawing && st.drawing.length > 1) this.drawLine(st.drawing, st.drawSide, px, 'drawing');
+      if (st.drawing && st.drawing.length > 1) this.drawLine(st.drawing, st.drawSide, px, st.drawTool === 'fort' ? 'fortdraw' : 'drawing');
       if (st.showLabels) this.drawCities(view, px);
       if (st.battles) this.drawBattles(view, st.battles);
     }
@@ -98,11 +110,72 @@
         ctx.stroke();
       }
       trace();
-      ctx.setLineDash(style === 'objective' ? [5 * px, 5 * px] : style === 'extension' ? [3 * px, 4 * px] : []);
+      ctx.setLineDash(style === 'objective' ? [5 * px, 5 * px] : style === 'extension' || style === 'fortdraw' ? [3 * px, 4 * px] : []);
       ctx.strokeStyle = `rgba(${col}, ${style === 'objective' ? 0.6 : style === 'extension' ? 0.75 : 1})`;
       ctx.lineWidth = (faint ? 1.4 : style === 'drawing' ? 2.2 : 2.4) * px;
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    // A defense line: a thick line with small teeth facing the enemy, the
+    // usual map symbol for a fortified line. Dashed while it is being dug;
+    // stretches that have been overrun are not drawn.
+    drawFort(path, side, facing, px, built, alive) {
+      if (!path || path.length < 2) return;
+      const ctx = this.ctx;
+      const col = side === WM.RED ? '255, 140, 125' : '160, 195, 255';
+      const a = 0.5 + 0.5 * Math.min(1, built);
+      const runs = [];
+      let cur = [];
+      for (const p of path) {
+        if (!alive || alive(p[0], p[1])) cur.push(p);
+        else if (cur.length) { runs.push(cur); cur = []; }
+      }
+      if (cur.length) runs.push(cur);
+      const spacing = 13 * px, tooth = 7 * px;
+      for (const run of runs) {
+        if (run.length < 2) continue;
+        const trace = () => {
+          ctx.beginPath();
+          ctx.moveTo(run[0][0], run[0][1]);
+          for (let i = 1; i < run.length; i++) ctx.lineTo(run[i][0], run[i][1]);
+        };
+        trace();
+        ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.lineWidth = 6 * px;
+        ctx.stroke();
+        trace();
+        ctx.setLineDash(built < 1 ? [7 * px, 4 * px] : []);
+        ctx.strokeStyle = `rgba(${col}, ${a})`;
+        ctx.lineWidth = 3.2 * px;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // teeth
+        ctx.beginPath();
+        let carry = spacing / 2;
+        for (let i = 1; i < run.length; i++) {
+          const [ax, ay] = run[i - 1], [bx, by] = run[i];
+          const L = Math.hypot(bx - ax, by - ay);
+          if (!L) continue;
+          const ux = (bx - ax) / L, uy = (by - ay) / L, nx = -uy * facing, ny = ux * facing;
+          let d = carry;
+          while (d < L) {
+            const x = ax + ux * d, y = ay + uy * d;
+            ctx.moveTo(x - ux * tooth * 0.7, y - uy * tooth * 0.7);
+            ctx.lineTo(x + nx * tooth, y + ny * tooth);
+            ctx.lineTo(x + ux * tooth * 0.7, y + uy * tooth * 0.7);
+            ctx.closePath();
+            d += spacing;
+          }
+          carry = d - L;
+        }
+        ctx.lineWidth = 1.5 * px;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.stroke();
+        ctx.fillStyle = `rgba(${col}, ${a})`;
+        ctx.fill();
+      }
     }
 
     // Men engaged on each side of every battle, set on either side of the
@@ -120,7 +193,8 @@
       ctx.lineJoin = 'round';
       const placed = [];
       const hits = (b) => placed.some((p) => b[0] < p[2] && b[2] > p[0] && b[1] < p[3] && b[3] > p[1]);
-      for (const b of battles) {
+      const order = battles.slice().sort((a, b) => b.attackers + b.defenders - a.attackers - a.defenders);
+      for (const b of order) {
         const sx = (b.at[0] - view.x0) * view.scale, sy = (b.at[1] - view.y0) * view.scale;
         if (sx < -300 || sy < -300 || sx > view.w + 300 || sy > view.h + 300) continue;
         const [dx, dy] = b.dir;
@@ -138,6 +212,9 @@
           if (!boxes.some(hits)) break;
           shift = (tries % 2 ? -1 : 1) * (Math.floor(tries / 2) + 1) * size * 0.9;
         }
+        // Still overlapping a stronger sector's numbers: leave this pair out
+        // (zooming in makes room for it).
+        if (boxes.some(hits)) continue;
         boxes.forEach((bx, i) => {
           placed.push(bx);
           const [, , , , x, y] = bx;

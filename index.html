@@ -34,29 +34,40 @@
     <section class="plate command" id="command" data-tab="command" aria-label="Command">
       <div class="brand">
         <span class="brand-title">Iran · 1902</span>
-        <span class="brand-sub">Theatre of operations</span>
+        <span class="brand-sub" id="modeChip">Sandbox</span>
       </div>
-      <div class="eyebrow">Plan an offensive for</div>
-      <div class="sides" role="group" aria-label="Side to plan for">
-        <button type="button" class="side" data-side="1" id="sideBlue" aria-pressed="false">
-          <span class="side-name">Blue</span>
-          <span class="side-meta" id="readyBlue">–</span>
-        </button>
-        <button type="button" class="side" data-side="2" id="sideRed" aria-pressed="false">
-          <span class="side-name">Red</span>
-          <span class="side-meta" id="readyRed">–</span>
-        </button>
+      <div class="banner" id="commandBanner" hidden></div>
+      <div id="sidesBox">
+        <div class="eyebrow">Give orders to</div>
+        <div class="sides" role="group" aria-label="Side to give orders to">
+          <button type="button" class="side" data-side="1" id="sideBlue" aria-pressed="false">
+            <span class="side-name">Blue</span>
+            <span class="side-meta" id="readyBlue">–</span>
+          </button>
+          <button type="button" class="side" data-side="2" id="sideRed" aria-pressed="false">
+            <span class="side-name">Red</span>
+            <span class="side-meta" id="readyRed">–</span>
+          </button>
+        </div>
+      </div>
+      <div class="tools" role="group" aria-label="What to draw">
+        <button type="button" class="tool" data-tool="attack" aria-pressed="false" title="Draw attack lines (A)">⟶ Attack line</button>
+        <button type="button" class="tool" data-tool="fort" aria-pressed="false" title="Draw defense lines (D)">▲ Defense line</button>
       </div>
       <p class="lede" id="planHint"></p>
-      <ol class="plan-list" id="planList" aria-label="Planned lines" hidden></ol>
+      <ol class="plan-list" id="planList" aria-label="Planned orders" hidden></ol>
       <div class="actions" id="planActions" hidden>
         <button type="button" class="primary" id="btnAttack" disabled>Attack</button>
         <button type="button" id="btnClear" disabled>Clear all</button>
       </div>
+      <div class="fort-box" id="fortBox" hidden>
+        <div class="eyebrow">Defense lines</div>
+        <ol class="fort-list" id="fortList"></ol>
+      </div>
       <footer class="cmd-foot">
         <label><input type="checkbox" id="optLabels" checked> Towns</label>
         <label><input type="checkbox" id="optProvinces" checked> Provinces</label>
-        <button type="button" class="link" id="btnReset">New war</button>
+        <button type="button" class="link" id="btnMenu">Menu</button>
       </footer>
     </section>
 
@@ -69,15 +80,33 @@
 
   <div class="col col-right ui">
     <section class="plate forces" id="forces" data-tab="forces" aria-label="Forces">
-      <h2 class="plate-title">Forces</h2>
-      <div class="power" aria-label="Balance of power">
-        <div class="power-bar"><i id="powBlue"></i><i id="powRed"></i></div>
-        <div class="power-legend"><span id="powBlueTxt">Blue –</span><span>Power</span><span id="powRedTxt">– Red</span></div>
+      <h2 class="plate-title" id="forcesTitle">Forces</h2>
+      <div class="army" id="armyCard" hidden>
+        <div class="army-ready"><span class="army-big" id="acReady">0</span><span class="army-lbl">soldiers ready</span></div>
+        <p class="army-line" id="acSplit"></p>
+        <p class="army-line army-train" id="acTrain"></p>
+        <div class="meter"><span>Readiness</span><i><b id="acReadiness"></b></i><span id="acReadinessTxt"></span></div>
+        <div class="meter"><span>Morale</span><i><b id="acMorale"></b></i><span id="acMoraleTxt"></span></div>
+        <div class="land">
+          <div class="land-bar"><i id="acLandYou"></i><i id="acLandFoe"></i></div>
+          <div class="land-txt" id="acLandTxt"></div>
+        </div>
+        <dl class="facts">
+          <dt>Enemy army</dt><dd id="acEnemy"></dd>
+          <dt>Killed (you · enemy)</dt><dd id="acKilled"></dd>
+          <dt>Towns (you · enemy)</dt><dd id="acTowns"></dd>
+        </dl>
       </div>
-      <table class="ftable">
-        <thead><tr><th scope="col"></th><th scope="col" class="b">Blue</th><th scope="col" class="r">Red</th></tr></thead>
-        <tbody id="forcesBody"></tbody>
-      </table>
+      <div class="sandbox-stats" id="sandboxStats">
+        <div class="power" aria-label="Balance of power">
+          <div class="power-bar"><i id="powBlue"></i><i id="powRed"></i></div>
+          <div class="power-legend"><span id="powBlueTxt">Blue –</span><span>Power</span><span id="powRedTxt">– Red</span></div>
+        </div>
+        <table class="ftable">
+          <thead><tr><th scope="col"></th><th scope="col" class="b">Blue</th><th scope="col" class="r">Red</th></tr></thead>
+          <tbody id="forcesBody"></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="plate diary" id="diary" data-tab="diary" aria-label="War diary">
@@ -113,10 +142,47 @@
       <h2 id="amTitle">Operation</h2>
       <div class="am-plans" id="amPlans"></div>
       <p class="am-short" id="amShort" role="alert" hidden></p>
-      <p class="am-note">Each forecast assumes the enemy launches no offensive of its own there. Battles shift, stall and counter-attack, so the real outcome will differ.</p>
+      <p class="am-note" id="amNote">Each forecast assumes the enemy launches no offensive of its own there. Battles shift, stall and counter-attack, so the real outcome will differ.</p>
       <div class="actions">
         <button type="button" id="amCancel">Cancel</button>
         <button type="button" class="primary" id="amLaunch">Launch attack</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="menu" hidden>
+    <div class="modal-card menu-card" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+      <h2 id="menuTitle">Iran · 1902</h2>
+      <p class="menu-lede">A war across Persia in real time, hour by hour from 8 January 1902.</p>
+      <section class="menu-opt">
+        <h3>Campaign</h3>
+        <p>Command one army against the computer. Your soldiers are limited: rest to train more, hold the front with defense lines, and strike when the enemy is stretched.</p>
+        <div class="seg" role="group" aria-label="Difficulty">
+          <button type="button" data-level="easy" aria-pressed="false">Easy</button>
+          <button type="button" data-level="normal" aria-pressed="true">Normal</button>
+          <button type="button" data-level="hard" aria-pressed="false">Hard</button>
+        </div>
+        <div class="menu-play">
+          <button type="button" class="play" data-play="1"><b>Play as Blue</b><span>260,000 men, most of the country</span></button>
+          <button type="button" class="play" data-play="2"><b>Play as Red</b><span>150,000 men in the western highlands</span></button>
+        </div>
+      </section>
+      <section class="menu-opt">
+        <h3>Sandbox</h3>
+        <p>Give orders to both armies, choose any defense strength, and stage the war however you like.</p>
+        <div class="menu-play"><button type="button" class="play" data-play="0"><b>Open sandbox</b><span>No opponent, full control</span></button></div>
+      </section>
+      <button type="button" class="link menu-resume" id="menuResume">Back to the current war</button>
+    </div>
+  </div>
+
+  <div class="modal" id="endModal" hidden>
+    <div class="modal-card end-card" role="dialog" aria-modal="true" aria-labelledby="endTitle">
+      <h2 id="endTitle">Victory</h2>
+      <p id="endText"></p>
+      <div class="actions">
+        <button type="button" id="endWatch">Keep watching</button>
+        <button type="button" class="primary" id="endNew">New game</button>
       </div>
     </div>
   </div>
@@ -131,6 +197,7 @@
 <script src="js/world.js"></script>
 <script src="js/planner.js"></script>
 <script src="js/sim.js"></script>
+<script src="js/ai.js"></script>
 <script src="js/renderer.js"></script>
 <script src="js/overlay.js"></script>
 <script src="js/app.js"></script>

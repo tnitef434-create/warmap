@@ -88,7 +88,7 @@
 
     // Resamples a stroke (grid units) and turns it into a natural-looking
     // border line. End points stay where they were drawn.
-    realistic(pts, closed, seed) {
+    realistic(pts, closed, seed, amp = 1) {
       const { river, rug } = this.world;
       const STEP = 0.5;
       const res = [pts[0]];
@@ -149,10 +149,62 @@
         const frac = 6.5 * nz.noise(arc / 55, 0.37) + 3.0 * nz.noise(arc / 18, 3.7) +
           1.3 * nz.noise(arc / 6, 7.9) + 0.6 * nz.noise(arc / 2.1, 12.1) + 0.25 * nz.noise(arc / 0.8, 17.3);
         const taper = closed ? 1 : Math.min(1, i / 20, (n - 1 - i) / 20);
-        const o = (smooth[i] * 0.85 + frac) * taper;
+        const o = (smooth[i] * 0.85 + frac) * taper * amp;
         out.push([res[i][0] + normals[i][0] * o, res[i][1] + normals[i][1] * o]);
       }
       return out;
+    }
+
+    // A defense line drawn inside our own territory: a fortified band about
+    // 6 km wide along the (gently reshaped) stroke.
+    fortLine(side, pathWorld, seed = 1) {
+      const world = this.world, { x0, y0, cell, w, h, owner, kmAvg } = world;
+      const enemy = side === WM.BLUE ? WM.RED : WM.BLUE;
+      const raw = [];
+      for (const [x, y] of pathWorld) {
+        const gx = (x - x0) / cell, gy = (y - y0) / cell;
+        const last = raw[raw.length - 1];
+        if (!last || Math.hypot(gx - last[0], gy - last[1]) >= 0.5) raw.push([gx, gy]);
+      }
+      let len = 0;
+      for (let i = 1; i < raw.length; i++) len += Math.hypot(raw[i][0] - raw[i - 1][0], raw[i][1] - raw[i - 1][1]);
+      if (raw.length < 2 || len < 6) return { ok: false, reason: 'Draw a longer defense line.' };
+      const pts = this.realistic(raw, false, seed, 0.45);
+      const mark = new Uint8Array(world.N), cells = [];
+      const R = 1.6;
+      let ownKm = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+        const mid = this.cellOf([(ax + bx) / 2, (ay + by) / 2]);
+        if (mid >= 0 && owner[mid] === side) ownKm += Math.hypot(bx - ax, by - ay) * kmAvg;
+        const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
+        for (let j = Math.max(0, Math.floor(Math.min(ay, by) - R)); j <= Math.min(h - 1, Math.ceil(Math.max(ay, by) + R)); j++) {
+          for (let k = Math.max(0, Math.floor(Math.min(ax, bx) - R)); k <= Math.min(w - 1, Math.ceil(Math.max(ax, bx) + R)); k++) {
+            const c = j * w + k;
+            if (mark[c] || owner[c] !== side) continue;
+            const t = clamp(((k + 0.5 - ax) * dx + (j + 0.5 - ay) * dy) / l2, 0, 1);
+            if (Math.hypot(ax + t * dx - k - 0.5, ay + t * dy - j - 0.5) <= R) { mark[c] = 1; cells.push(c); }
+          }
+        }
+      }
+      if (ownKm < 0.5 * len * kmAvg || ownKm < 10) {
+        return { ok: false, reason: `Draw the defense line inside ${WM.SIDE_NAME[side]} territory, behind the front you want to hold.` };
+      }
+      // Which side of the line faces the enemy, for the fortification symbol.
+      const D = world.distanceFrom(enemy);
+      let vote = 0;
+      for (let i = 1; i < pts.length - 1; i += 3) {
+        const [ax, ay] = pts[i - 1], [bx, by] = pts[i + 1];
+        const l = Math.hypot(bx - ax, by - ay) || 1;
+        const nx = -(by - ay) / l, ny = (bx - ax) / l;
+        const p1 = this.cellOf([pts[i][0] + nx * 3, pts[i][1] + ny * 3]), p2 = this.cellOf([pts[i][0] - nx * 3, pts[i][1] - ny * 3]);
+        if (p1 >= 0 && p2 >= 0) vote += D[p1] < D[p2] ? 1 : -1;
+      }
+      return {
+        ok: true, kind: 'fort', side, enemy, cells: Int32Array.from(cells),
+        path: pts.map(([gx, gy]) => [x0 + gx * cell, y0 + gy * cell]),
+        facing: vote >= 0 ? 1 : -1, km: ownKm, garrison: Math.round(WM.FORT_MEN_PER_KM * ownKm),
+      };
     }
 
     rasterSegment(a, b, out) {

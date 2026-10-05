@@ -1,30 +1,42 @@
 # Iran 1902 War Map
 
-A real-time war map of Iran. You command both sides, Blue and Red. Draw a line into the other side's territory, commit troops and launch an offensive, then watch the battle move across the real terrain hour by hour. Several offensives can run at once, for both sides, and they fight each other where they meet.
+A real-time war map of Iran. Play a **campaign** against the computer as Blue or Red, or open the **sandbox** and give orders to both armies. Draw attack lines and defense lines, commit soldiers, and watch the battles move across the real terrain hour by hour. The war never stops for turns.
 
-![Two offensives under way: troop numbers on each side of the front, operations on the left, forces and the war diary on the right](docs/screenshot.jpg)
+![A campaign as Red: troop counts along the fronts, your army on the right, your offensive and the enemy's attack in the operations list](docs/screenshot.jpg)
 
 ## Play
 
-Open `index.html` in a modern browser (Chrome, Edge, Firefox or Safari with WebGL2). No server or build step is needed, and it works straight from disk.
+Open `index.html` in a modern browser (Chrome, Edge, Firefox or Safari with WebGL2). No server or build step is needed, and it works straight from disk. The menu offers:
 
-1. **Pick a side.** Click **Blue** or **Red** under *Plan an offensive for*. The button shows how many men that side has ready.
-2. **Draw the objective.** Drag a line into the enemy's land. When you let go, your stroke is reshaped into a realistic front line: it bends towards nearby rivers and broken ground and gains natural irregularity. Everything between your current front and the line becomes the objective, shown hatched.
+- **Campaign** (Easy, Normal or Hard): you command one army, the computer the other.
+- **Sandbox**: you give orders to both armies and choose any defense strength.
+
+### Campaign
+
+- **Soldiers are limited.** The army card shows how many are ready, how many are attacking, defending, or stationed on defense lines.
+- **Rest to rebuild.** Every day new soldiers are trained and wounded men return. While you are not attacking, training runs twice as fast.
+- **Fighting wears the army down.** Every offensive and every sector you defend lowers readiness, and tired troops fight worse. Attacking on several fronts, or attacking while you are also defending, leaves the rest of the front thin.
+- **The enemy fights back.** The computer attacks towns near the front (especially ones it has lost), rushes reserves to sectors where you outnumber it, halts offensives that are failing, and digs its own defense lines. Its attacks appear as alerts.
+- **Counter and reinforce.** Send 5,000 more men into your own attack, send 5,000 defenders against an enemy attack, or draw a counter-attack straight into an enemy salient.
+- **Defense lines.** Draw one inside your own land. It needs 60 men per km for as long as it stands and 30 hours to dig. Enemy attacks that reach it face about three times the resistance. Stretches that are overrun are lost with their men.
+- You win when the enemy holds no ground, and lose when you hold none.
+
+### Giving orders (both modes)
+
+1. **Pick a tool**: *Attack line* (`A`) or *Defense line* (`D`). In the sandbox, first pick Blue or Red.
+2. **Draw.** Each stroke is added to the list of planned orders; nothing is replaced. Attack lines are reshaped into realistic front lines that bend towards rivers and broken ground. Everything between your front and the line becomes the objective, shown hatched.
    - A line that crosses enemy land is a **front-line offensive**. Ends that stop short are tied to the nearest edge.
-   - A closed loop is an **encirclement** and takes the enemy ground inside it.
-   - A short arrow that stops deep in enemy land is a **thrust**: a salient along the arrow.
-   - ⇄ next to a planned line takes the other side of it when that is a comparable piece; × removes the line.
-3. **Draw more lines.** Each new stroke is added to the list of planned lines; nothing is replaced. Switch to the other side and draw its lines too if you want Blue and Red to attack at the same moment.
-4. **Attack.** One press launches every planned line together. For each line, choose how many troops to commit and the enemy's defense strength, from 1 (scattered militia) to 100 (fortified line). A side can't commit more men than it has ready across all its lines. Each line shows how many defenders hold its sector, the force ratio, and a forecast: duration, expected end date and losses on both sides. Stronger defenses take longer and cost more.
-5. **Keep going.** You can plan and launch more lines while offensives are running. Where Blue and Red offensives meet head-on, the stronger side pushes.
-6. **Watch.** The two big numbers on the map are the men fighting in each battle: the attacker's on his side of the front, the defender's on the other. They fall as casualties mount. Zoom in to watch breakthroughs, counter-attacks and encirclements. Press `H` to hide the interface.
-7. An offensive ends when it takes its objective, runs out of men, or bogs down. You can also **halt** it from the operations list and keep the ground taken.
+   - A closed loop is an **encirclement**; a short arrow deep into enemy land is a **thrust**.
+   - ⇄ takes the other side of a line when that is a comparable piece; × removes an order.
+3. **Carry them out.** One press launches every planned order together. For each attack, choose the troops to commit (and, in the sandbox, the enemy's defense strength). Each attack shows the defenders it will meet, the force ratio, and a forecast of duration and losses.
+4. **Watch.** The big numbers on the map are the men fighting, the attacker's on his side of the front and the defender's on the other. Long fronts are split into sectors, each with its own pair of numbers; zoom in to see them all. Press `H` to hide the interface.
+5. An offensive ends when it takes its objective, runs out of men, or bogs down. You can also halt it and keep the ground taken.
 
 ### Panels
 
-- **Operations**: every running offensive with its status (breakthrough, advancing, heavy fighting, stalled), attackers and defenders remaining, killed on both sides and ground taken. Click an operation's name to fly to its battle.
-- **Forces**: territory, population, army size (and how much of it is attacking or defending), killed, wounded, taken prisoner, towns held and occupied, provinces, morale and the balance of power.
-- **War diary**: offensives launched and ended, towns occupied and liberated, counter-attacks, encirclements and surrenders.
+- **Operations**: every running offensive with its status (breakthrough, advancing, heavy fighting, stalled), attackers and defenders remaining, killed on both sides, ground taken, and buttons to reinforce or halt. Click an operation's name to fly to its battle.
+- **Your army** (campaign) or **Forces** (sandbox): soldiers ready and where the rest are, training per day, readiness and morale, territory, towns, killed; the sandbox table adds wounded, prisoners, provinces, population and the balance of power.
+- **War diary**: offensives, towns occupied and liberated, counter-attacks, encirclements, surrenders, breached defense lines and enemy alerts.
 
 ### Time
 
@@ -41,16 +53,16 @@ The war starts on **8 January 1902, 00:00**. The clock advances by the hour.
 
 | Action | Mouse / keyboard | Touch |
 |--------|------------------|-------|
-| Draw the objective line | Left-drag (after picking a side) | One finger |
-| Pan | Right- or middle-drag, or left-drag when no side is picked | Two fingers |
+| Draw an attack or defense line | Left-drag with a tool picked; `A` / `D` switch tools | One finger |
+| Pan | Right- or middle-drag, or left-drag with no tool picked | Two fingers |
 | Zoom (down to a few km across) | Scroll wheel, `+` / `−`, double-click | Pinch |
 | Show all of Iran | `F` or ⤢ | ⤢ |
 | Hide / show the interface | `H` or the eye button | Eye button |
 | Pause / resume | `Space` | ❚❚ |
 | Speed | `1`–`4` | Speed buttons |
-| Remove the last planned line | `Esc` | × on the line |
+| Remove the last planned order | `Esc` | × on the order |
 
-The war, its running operations, the clock and the diary are saved in the browser. **New war** resets to the opening situation: Blue with 260,000 men, Red with 150,000.
+The game is saved in the browser and resumes where you left it. **Menu** starts a new campaign or sandbox. Blue starts with 260,000 men, Red with 150,000.
 
 ## How the fighting is simulated
 
@@ -62,7 +74,9 @@ Iran is divided into a grid of about 385,000 cells of roughly 2 × 2 km. Ownersh
 - **Ground.** Mountains (measured from the shaded relief) slow movement and favour the defender; rivers are hard to cross; towns are fortified and hold out, so the front flows around them.
 - **Outflanking.** Ground surrounded on several sides falls quickly. Territory cut off completely loses supply, fights ever more weakly and finally surrenders, and its garrison is taken prisoner.
 - **Losses.** Casualties come from the strength of both sides along the engaged front; about 30% are killed. An offensive whose men fall below a minimum, or that stops gaining ground for a day, ends.
-- **Morale and power.** Taking towns and provinces raises morale, losses and encirclements lower it, and morale makes troops fight better or worse. Each side recruits slowly from the population it holds. Power combines army size, morale, population and towns.
+- **Morale, readiness and training.** Taking towns and provinces raises morale; losses and encirclements lower it. Fighting lowers readiness, which recovers with rest. Both make troops fight better or worse. Each side trains soldiers from a fixed draft plus the population it holds, twice as fast while not attacking, and part of the wounded return to duty. Power combines army size, morale, population and towns.
+- **Defense lines** multiply the defender's strength on the cells they cover once dug; captured stretches are lost with part of their garrison.
+- **Campaign defenders.** When a sector is attacked, the defender pulls a share of its free soldiers into it: more for a wide attack on a short front. That is why committing men elsewhere weakens your defense.
 
 The renderer draws ownership per pixel from the grid, with a fractal edge, so borders stay irregular and natural at every zoom level.
 
@@ -74,7 +88,9 @@ css/style.css       interface styles
 js/util.js          noise, heap, calendar, decoding helpers
 js/world.js         simulation grid and ownership
 js/planner.js       turns a drawn line into a realistic front and an objective
-js/sim.js           battle engine: armies, battle groups, counter-attacks, pockets, forecasts
+js/sim.js           battle engine: armies, battle groups, counter-attacks, pockets, defense lines,
+                    training and readiness, forecasts
+js/ai.js            the computer opponent for the campaign
 js/renderer.js      WebGL2 map: stencilled land/water/Iran, relief shading, live ownership
 js/overlay.js       borders, lines, spearhead arrows, troop numbers, town labels (Canvas 2D)
 js/app.js           clock, camera, input, panels
@@ -104,6 +120,6 @@ node tools/build-data.mjs natural-earth-vector natural-earth-raster
 ## Checks and builds
 
 ```sh
-node tools/sim-check.mjs [defense] [seed] [troops]   # run two opposing offensives headlessly
+node tools/sim-check.mjs [defense] [seed] [troops]   # opposing offensives, then 20 days of AI against AI
 node tools/bundle.mjs                                # single-file build in dist/
 ```
