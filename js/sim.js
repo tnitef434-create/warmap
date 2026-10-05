@@ -494,6 +494,8 @@
       if (this.pocketClock >= 2) {
         this.updatePockets(this.pocketClock, t, events);
         this.pocketClock = 0;
+        this.enforceArmy(1);
+        this.enforceArmy(2);
       }
     }
 
@@ -826,9 +828,14 @@
         const c = op.front[i];
         if (this.owner[c] === op.enemy) { this.prog[c] = 0; this.touch(c); }
       }
+      const cleared = this.mopUp(op, reason, t, events);
       this.slots[op.slot] = null;
       this.markPush(op.side);
       if (!events || this.quiet) return;
+      if (cleared > 0) {
+        const town = this.world.nearestTown(...op.mopAt);
+        events.push({ t, side: op.side, kind: 'battle', text: `${WM.SIDE_NAME[op.side]} clears the last ${WM.SIDE_NAME[op.enemy]} holdouts near ${town ? town.name : 'the front'} (${WM.formatKm2(cleared)}).` });
+      }
       const side = WM.SIDE_NAME[op.side];
       const fmt = (v) => Math.round(v).toLocaleString('en-US');
       const toll = `${side} lost ${fmt(op.lossAtt)} men (${fmt(op.killedAtt)} killed), ${WM.SIDE_NAME[op.enemy]} ${fmt(op.lossDef)} (${fmt(op.killedDef)} killed).`;
@@ -840,6 +847,47 @@
         halted: `Operation ${op.name} is halted after ${WM.formatDuration(t - op.t0)}, holding ${took}. ${toll}`,
       }[reason];
       events.push({ t, side: op.side, kind: 'op', text, opEnd: reason });
+    }
+
+    // When a battle ends, the winner's ground is cleaned up: the rest of a
+    // won objective falls, and small islands of enemy land left behind the
+    // new line (cut off from the enemy's main territory) surrender at once.
+    mopUp(op, reason, t, events) {
+      const world = this.world, own = this.owner, { w, N } = world, A = op.side, E = op.enemy;
+      const kmA = world.kmAvg * world.kmAvg;
+      const MAX = Math.round(600 / kmA);           // islands up to ~600 km²
+      let area = 0, sx = 0, sy = 0, n = 0;
+      const take = (c) => {
+        const x = c % w;
+        area += world.rowArea[(c / w) | 0]; sx += x + 0.5; sy += (c - x) / w + 0.5; n++;
+        this.flip(c, A, t, events, op);
+        op.gained += world.rowArea[(c / w) | 0];
+      };
+      if (reason === 'success') for (const c of op.objCells) if (own[c] === E) take(c);
+      // Look for small enemy islands around the operation's area.
+      const pad = 30;
+      const x0 = Math.max(0, op.bx - pad), x1 = Math.min(w - 1, op.bx + op.bw + pad);
+      const y0 = Math.max(0, op.by - pad), y1 = Math.min(world.h - 1, op.by + op.bh + pad);
+      const seen = new Uint8Array(N), stack = this.stack || (this.stack = new Int32Array(N)), comp = [];
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const c0 = y * w + x;
+        if (own[c0] !== E || seen[c0]) continue;
+        let sp = 0, touchesA = false, big = false;
+        comp.length = 0;
+        stack[sp++] = c0; seen[c0] = 1;
+        while (sp) {
+          const c = stack[--sp], cx = c % w;
+          if (comp.length <= MAX) comp.push(c); else big = true;
+          for (const nb of [cx > 0 ? c - 1 : -1, cx < w - 1 ? c + 1 : -1, c - w, c + w]) {
+            if (nb < 0 || nb >= N) continue;
+            const o = own[nb];
+            if (o === E) { if (!seen[nb]) { seen[nb] = 1; stack[sp++] = nb; } } else if (o === A) touchesA = true;
+          }
+        }
+        if (!big && touchesA) for (const c of comp) take(c);
+      }
+      if (n) op.mopAt = [sx / n, sy / n];
+      return area;
     }
 
     // Calling off an attack is not free: the retreat costs men, and the
@@ -901,7 +949,7 @@
         for (const c0 of world.iranCells) {
           if (own[c0] !== S || labels[c0]) continue;
           const id = comps.length;
-          const comp = { size: 0, open: false, sx: 0, sy: 0, hours: 0 };
+          const comp = { size: 0, open: false, touchE: false, sx: 0, sy: 0, hours: 0 };
           comps.push(comp);
           let sp = 0;
           stack[sp++] = c0;
@@ -915,7 +963,7 @@
             for (const n of nbs) {
               if (n < 0 || n >= N) { comp.open = true; continue; }
               const o = own[n];
-              if (o === S) { if (!labels[n]) { labels[n] = id; stack[sp++] = n; } } else if (o !== E) comp.open = true;
+              if (o === S) { if (!labels[n]) { labels[n] = id; stack[sp++] = n; } } else if (o !== E) comp.open = true; else comp.touchE = true;
             }
           }
         }
@@ -924,6 +972,7 @@
         for (const c of world.iranCells) {
           if (own[c] !== S) continue;
           const id = labels[c], comp = comps[id];
+          if (comp.open && comp.touchE) comp.open = false;
           if (id !== main && !comp.open) {
             this.pocketHours[c] += dtH;
             comp.hours = Math.max(comp.hours, this.pocketHours[c]);
@@ -931,10 +980,14 @@
         }
         for (let i = 1; i < comps.length; i++) {
           const comp = comps[i];
+          if (comp.open && comp.touchE) comp.open = false;
           if (i === main || comp.open) continue;
           const area = comp.size * world.kmAvg * world.kmAvg;
           const town = world.nearestTown(comp.sx / comp.size, comp.sy / comp.size);
           const where = town ? town.name : 'the front';
+          // Small cut-off scraps (up to ~600 km²; a border or coast at their back
+          // or not) cannot hold out: they give up at once, leaving no spots.
+          if (comp.size * world.kmAvg * world.kmAvg <= 600) { this.surrender(S, E, i, area, where, t, events); continue; }
           if (comp.hours <= dtH + 1e-6 && comp.size >= 25 && events) {
             events.push({ t, side: E, kind: 'pocket', text: `${WM.SIDE_NAME[S]} forces are encircled near ${where} (${WM.formatKm2(area)}).` });
           }

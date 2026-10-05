@@ -150,3 +150,12 @@ Losses are permanent. Of the men lost in fighting, about 30% are killed and stay
 Wounded men can recover and rejoin, but only from the wounded pool. New soldiers come only from training.
 
 Every soldier in an attack, a defended sector or a defense line is part of the army. When deaths or surrenders leave fewer soldiers than are committed, those units shrink to match. Defenders are drawn only from soldiers who are actually free, and a counter-attack moves men rather than doubling them.
+
+## No leftover enemy spots
+
+Territory stays clean:
+- **Winning an attack** captures the rest of its objective.
+- **When any attack ends**, small enemy patches left behind the new line surrender at once.
+- **During play**, any cut-off scrap of up to about 600 km² that touches the other side surrenders within two game hours. This includes scraps backed onto a foreign border or the coast.
+- **Larger encirclements** still hold out for a while before they surrender.
+- **Real islands in the Gulf** are left alone.

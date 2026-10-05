@@ -114,4 +114,26 @@ for (const side of [1, 2]) {
 }
 for (const e of ev2.filter((e) => e.kind === 'alert' || e.kind === 'op').slice(0, 10)) console.log(`  [${WM.formatStamp(e.t)}] ${e.text}`);
 if (!k2.alert) { console.error('the AI never attacked'); process.exit(1); }
+// After a battle no small islands of enemy land stay behind the new line.
+{
+  const world = war2.world, own = war2.owner, { w, N } = world;
+  const seen = new Uint8Array(N);
+  let islands = 0;
+  for (const c0 of world.iranCells) {
+    const S = own[c0];
+    if (!S || seen[c0]) continue;
+    const st = [c0]; seen[c0] = 1; let size = 0, touchE = false;
+    while (st.length) {
+      const c = st.pop(), x = c % w; size++;
+      for (const n of [x > 0 ? c - 1 : -1, x < w - 1 ? c + 1 : -1, c - w, c + w]) {
+        if (n < 0 || n >= N) continue;
+        if (own[n] === S && !seen[n]) { seen[n] = 1; st.push(n); } else if (own[n] && own[n] !== S) touchE = true;
+      }
+    }
+    // Real islands in the Gulf touch only the sea; enemy-ringed scraps must be gone.
+    if (touchE && size * world.kmAvg * world.kmAvg <= 600) islands++;
+  }
+  console.log(`small enclaves left on the map: ${islands}`);
+  if (islands) { console.error('enemy enclaves survived'); process.exit(1); }
+}
 console.log('ok');
