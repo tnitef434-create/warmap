@@ -302,6 +302,11 @@
         if (pointers.size > 2) return;
         const [x, y] = pos(e);
         const drawButton = e.pointerType !== 'mouse' || e.button === 0;
+        // Right-click a defense line, or tap one with the defense tool, to remove it.
+        if ((e.button === 2 || (this.st.tool === 'fort' && drawButton)) && pointers.size === 1) {
+          const f = this.fortAt(x, y);
+          if (f) { pointers.delete(e.pointerId); this.abandonFort(f); return; }
+        }
         if (this.canDraw() && drawButton) {
           gesture = { type: 'draw', last: [x, y] };
           this.startDraw(x, y);
@@ -475,10 +480,10 @@
         const li = e.target.closest('.fort');
         if (!li || !e.target.closest('.fort-remove')) return;
         const f = this.war.forts.find((x) => x.id === +li.dataset.id);
-        if (!f) return;
-        this.war.removeFort(f.id);
-        this.addLog({ t: this.st.time, side: f.side, text: `${WM.SIDE_NAME[f.side]} abandons a defense line; ${fmt(f.garrison)} men return to the reserve.` });
-        this.overlayDirty = true;
+        if (f) this.abandonFort(f);
+      });
+      $('fortClear').addEventListener('click', () => {
+        for (const f of this.war.forts.filter((f) => !this.campaign || f.side === this.st.player)) this.abandonFort(f, true);
         this.refreshPanels();
         this.refreshStats();
       });
@@ -670,7 +675,7 @@
       if (st.winner || st.over) hint = 'The war is over. Open the menu to start a new one.';
       else if (plans.length) hint = `${plans.length} ${plans.length === 1 ? 'order' : 'orders'} planned. Draw more, then carry them out all at once.`;
       else if (!st.side) hint = 'Pick a side, then draw attack lines or defense lines. You can plan several and launch them together, for one side or both.';
-      else if (st.tool === 'fort') hint = `Draw a defense line inside ${WM.SIDE_NAME[st.side]} land. Attacks that reach it face about three times the resistance. It needs ${WM.FORT_MEN_PER_KM} men per km and ${WM.FORT_BUILD_HOURS} hours to dig.`;
+      else if (st.tool === 'fort') hint = `Draw a defense line inside ${WM.SIDE_NAME[st.side]} land. Attacks that reach it face about three times the resistance. It needs ${WM.FORT_MEN_PER_KM} men per km and ${WM.FORT_BUILD_HOURS} hours to dig. Tap an existing line (or right-click it) to remove it.`;
       else if (st.tool === 'attack') hint = `Draw the line your troops should reach in ${enemy} territory. A loop encircles; a short stroke is a thrust. ${camp ? 'Right-drag pans.' : ''}`;
       else hint = 'Pick Attack line or Defense line to draw. Drag the map to look around.';
       $('planHint').textContent = hint;
@@ -718,11 +723,38 @@
         li.dataset.id = f.id;
         li.dataset.side = f.side;
         const town = this.world.nearestTown(...this.gridOf(f.path[Math.floor(f.path.length / 2)]));
-        li.innerHTML = '<span class="fort-text"></span><button type="button" class="fort-remove" title="Abandon this line; its men return to the reserve" aria-label="Abandon defense line">×</button>';
+        li.innerHTML = '<span class="fort-text"></span><button type="button" class="fort-remove" title="Abandon this line; its men return to the reserve" aria-label="Remove defense line">Remove</button>';
         const state = f.built < 1 ? `digging ${Math.round(f.built * 100)}%` : f.breached ? 'breached' : 'ready';
         li.querySelector('.fort-text').textContent = `${this.campaign ? '' : WM.SIDE_NAME[f.side] + ' · '}near ${town ? town.name : '?'} · ${fmt(f.garrison)} men · ${state}`;
         return li;
       }));
+    }
+
+    // The player's defense line closest to a screen point, within a few pixels.
+    fortAt(sx, sy) {
+      const [wx, wy] = this.toWorld(sx, sy);
+      const tol = 12 / this.view.scale;
+      let best = null, bd = tol;
+      for (const f of this.war.forts) {
+        if (this.campaign && f.side !== this.st.player) continue;
+        const P = f.path;
+        for (let i = 1; i < P.length; i++) {
+          const [ax, ay] = P[i - 1], [bx, by] = P[i];
+          const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy || 1;
+          const u = WM.clamp(((wx - ax) * dx + (wy - ay) * dy) / L, 0, 1);
+          const d = Math.hypot(wx - ax - u * dx, wy - ay - u * dy);
+          if (d < bd) { bd = d; best = f; }
+        }
+      }
+      return best;
+    }
+
+    abandonFort(f, quiet) {
+      this.war.removeFort(f.id);
+      const town = this.world.nearestTown(...this.gridOf(f.path[Math.floor(f.path.length / 2)]));
+      this.addLog({ t: this.st.time, side: f.side, text: `${WM.SIDE_NAME[f.side]} abandons the defense line near ${town ? town.name : 'the front'}; ${fmt(f.garrison)} men return to the reserve.` });
+      this.overlayDirty = true;
+      if (!quiet) { this.refreshPanels(); this.refreshStats(); }
     }
 
     gridOf([x, y]) {

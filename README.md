@@ -135,3 +135,10 @@ A small push takes a few days. A large offensive across a province takes weeks o
 - **Counter-attack:** when a defense is clearly winning, a Counter-attack button appears.
 - **AI:** the computer halts hopeless attacks and counter-attacks in the same way.
 - **Timelapse:** after a match, or from the footer, replay the war in slow, fast or very fast mode, with the date shown.
+
+## Removing defense lines
+
+There are three ways to remove a defense line, and its garrison returns to the reserve each time:
+- Right-click the line on the map.
+- With the Defense line tool selected, tap the line.
+- Press **Remove** next to it in the Defense lines list. **Remove all lines** clears every one of them.
