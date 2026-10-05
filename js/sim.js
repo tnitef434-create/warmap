@@ -1,11 +1,13 @@
 // Battle simulation.
 //
 // Ownership changes cell by cell (~2 km). Each offensive is an army with a
-// number of men, split between holding troops spread along the whole front
-// and a few battle groups that concentrate on narrow sectors. Where a battle
-// group presses, the front breaks; elsewhere it barely moves. The defender
-// brings up reserves against each thrust, so groups stall and shift their
-// effort, and defenders counter-attack the flanks of salients. Several
+// number of men, most of them spread along the whole front and the rest in a
+// few battle groups that add weight to some sectors. Armies advance in line:
+// a sector that runs ahead of its neighbours exposes its flanks and slows,
+// while a sector left behind is enveloped and falls faster, so the whole
+// front moves together instead of single bulges. The defender brings up
+// reserves against each thrust, so groups stall and shift their effort to
+// lagging sectors, and defenders counter-attack the flanks of salients. Several
 // offensives by both sides can run at once; where they meet head-on the
 // stronger side pushes. Cut-off pockets lose supply and surrender.
 (function (WM) {
@@ -28,12 +30,18 @@
   const VMAX = 1.6;        // km/h, unopposed advance (~25-40 km a day incl. halts)
   const VMAX_CAP = 0.9;    // km/h, fastest sustained sector pace
   const STEP = 0.1;        // h, longest simulation sub-step
-  const HOLD_SHARE = 0.3;  // share of an offensive's men holding the wider front
+  const HOLD_SHARE = 0.65; // share of an offensive's men pressing along the whole front
   const LOSS_RATE = 0.0003;
   const KILLED_SHARE = 0.3;
   const CODENAMES = ['Rostam', 'Simurgh', 'Kaveh', 'Arash', 'Sohrab', 'Damavand', 'Esfandiar', 'Zagros', 'Anahita',
     'Bahram', 'Alborz', 'Karun', 'Fereydun', 'Siavash', 'Gordafarid', 'Jamshid', 'Mithra', 'Tahmineh', 'Kay Khosrow',
     'Bijan', 'Manuchehr', 'Garshasp', 'Rudaba', 'Zal', 'Giv', 'Gudarz', 'Babak', 'Shirin', 'Farhad', 'Tus'];
+  // Line cohesion: how much of the ground around a front cell the attacker
+  // already holds, at a local and an operational scale (radius in km). A
+  // straight front sits near LINE; tips of salients below, dents above.
+  const COH_R = [8, 28];
+  const LINE = 0.48;
+  const COH_K = 5.5;
   const NB = [[-1, -1, 0.7], [0, -1, 1], [1, -1, 0.7], [-1, 0, 1], [1, 0, 1], [-1, 1, 0.7], [0, 1, 1], [1, 1, 0.7]];
   const WEIGHTS = Float32Array.from(NB.map((n) => n[2]));
 
@@ -455,7 +463,7 @@
       }];
       return list.map((a) => ({
         x: a.sx, y: a.sy, tx: a.sx, ty: a.sy, gx: a.ex, gy: a.ey,
-        share: a.strength, r: (11 + 9 * op.rand()) / kmAvg, react: 0, gainT: t, retargetT: t,
+        share: a.strength, r: (18 + 12 * op.rand()) / kmAvg, react: 0, gainT: t, retargetT: t,
       }));
     }
 
@@ -523,6 +531,9 @@
       op.defBase = (op.defPool / op.frontKm) * armyD * (0.75 + 0.35 * sD.morale) * (1 - 0.3 * sD.fatigue) + 4;
       const mA = (0.75 + 0.35 * sA.morale) * (1 - 0.35 * sA.fatigue);
       const fort = this.fort;
+      if (!op.coh || t >= op.cohT) this.cohesion(op, t);
+      // Advance rates decline day by day in a sustained offensive.
+      const wear = 1 / (1 + 0.012 * Math.max(0, t - op.t0) / 24);
       this.weak = this.weak.filter((z) => z.until > t);
       const weak = this.weak.filter((z) => z.side === D);
 
@@ -549,7 +560,8 @@
         }
         const l = (y - op.by) * op.bw + (x - op.bx);
         const sector = Math.exp(0.35 * op.noise.noise((x * kmAvg) / 80 + t * 0.03, (y * kmAvg) / 80 - t * 0.02));
-        const pa = (op.holdDen + focus) * op.att[l] * mA * sector;
+        const line = this.lineFactor(op, x, y);
+        const pa = (op.holdDen + focus) * op.att[l] * mA * sector * line * wear;
         const outflank = 1 + 0.75 * Math.max(0, nA - 2.4);
         const cut = pocket ? 1 - Math.min(0.75, pocket[c] / 72) : 1;
         let shaken = 1;
@@ -574,6 +586,52 @@
       this.applyLosses(op, lossA * kmAvg * h * LOSS_RATE, lossD * kmAvg * h * LOSS_RATE, false);
       this.moveGroups(op, h, t, events);
       this.counterAttack(op, h, t, events);
+    }
+
+    // Summed-area tables of the attacker's and both sides' ground around an
+    // operation, refreshed every game hour, so each front cell can ask how
+    // far its sector stands ahead of or behind the line around it.
+    cohesion(op, t) {
+      const world = this.world, own = this.owner, { w, h: H } = world;
+      const M = Math.ceil(COH_R[1] / world.kmAvg) + 1;
+      const x0 = Math.max(0, op.bx - M), y0 = Math.max(0, op.by - M);
+      const x1 = Math.min(w - 1, op.bx + op.bw + M), y1 = Math.min(H - 1, op.by + op.bh + M);
+      const W = x1 - x0 + 2, HH = y1 - y0 + 2;
+      let c = op.coh;
+      if (!c || c.W !== W || c.H !== HH) c = op.coh = { W, H: HH, SA: new Int32Array(W * HH), ST: new Int32Array(W * HH) };
+      c.x0 = x0; c.y0 = y0;
+      c.r = COH_R.map((km) => Math.max(2, Math.round(km / world.kmAvg)));
+      const { SA, ST } = c, A = op.side, D = op.enemy;
+      for (let y = 1; y < HH; y++) {
+        let ra = 0, rt = 0;
+        const row = (y0 + y - 1) * w + x0 - 1;
+        for (let x = 1; x < W; x++) {
+          const o = own[row + x];
+          if (o === A) { ra++; rt++; } else if (o === D) rt++;
+          SA[y * W + x] = SA[(y - 1) * W + x] + ra;
+          ST[y * W + x] = ST[(y - 1) * W + x] + rt;
+        }
+      }
+      op.cohT = t + 1;
+    }
+
+    // > 1 where the sector lags behind the line (the defender there is half
+    // enveloped), < 1 at the tip of a salient whose flanks hang in the air.
+    lineFactor(op, x, y) {
+      const c = op.coh;
+      if (!c) return 1;
+      const { W, H, SA, ST } = c;
+      const lx = x - c.x0 + 1, ly = y - c.y0 + 1;
+      let f = 0;
+      for (const r of c.r) {
+        const xa = Math.max(0, lx - r - 1), xb = Math.min(W - 1, lx + r);
+        const ya = Math.max(0, ly - r - 1), yb = Math.min(H - 1, ly + r);
+        const a = SA[yb * W + xb] - SA[ya * W + xb] - SA[yb * W + xa] + SA[ya * W + xa];
+        const tt = ST[yb * W + xb] - ST[ya * W + xb] - ST[yb * W + xa] + ST[ya * W + xa];
+        f += tt > 0 ? a / tt : LINE;
+      }
+      f /= c.r.length;
+      return clamp(Math.exp(COH_K * (f - LINE)), 0.22, 3.2);
     }
 
     applyLosses(op, a, d, defenderAttacking) {
@@ -634,7 +692,7 @@
         const x = (c % w) + 0.5, y = Math.floor(c / w) + 0.5;
         let md = 60;
         for (const o of op.groups) if (o !== g) md = Math.min(md, Math.hypot(x - o.x, y - o.y));
-        const s = md / 60 - 0.45 * (this.world.defMod[c] - 1) + 0.7 * rand();
+        const s = md / 60 - 0.45 * (this.world.defMod[c] - 1) + 0.9 * Math.log(this.lineFactor(op, c % w, (c - (c % w)) / w)) + 0.5 * rand();
         if (s > bestS) { bestS = s; best = c; }
       }
       g.x = g.tx = (best % w) + 0.5;
@@ -712,7 +770,8 @@
             const g2 = (x + 0.5 - g.x) ** 2 + (y + 0.5 - g.y) ** 2;
             if (g2 < g.lim) focus += g.den * Math.exp(-g2 / g.r2);
           }
-          const pa = ct.den * wgt * mD;
+          // Salients are easiest to cut at their exposed tips and flanks.
+          const pa = (ct.den * wgt * mD) / this.lineFactor(op, x, y);
           const pd = ((op.holdDen + focus) * defMod[c] * mA * 0.8) / (1 + 0.75 * Math.max(0, nD - 2.4));
           const ratio = pa / pd;
           const m = Math.min(pa, pd);

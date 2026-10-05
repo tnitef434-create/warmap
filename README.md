@@ -68,9 +68,15 @@ The game is saved in the browser and resumes where you left it. **Menu** starts 
 
 Iran is divided into a grid of about 385,000 cells of roughly 2 × 2 km. Ownership changes cell by cell, in real time.
 
-- **Armies.** Each offensive has the troops you committed. About a third hold the whole front thinly; the rest form one to four **battle groups** that concentrate on narrow sectors. Where a battle group presses, the front breaks; elsewhere it barely moves.
+- **Armies.** Each offensive has the troops you committed. About two thirds press along the whole front; the rest form one to four **battle groups** that add weight to wide sectors.
+- **Advancing in line.** Armies keep their front together, as in a broad-front advance.
+  - **Running ahead:** a sector that gets ahead of its neighbours exposes its flanks. It slows down and draws counter-attacks.
+  - **Falling behind:** a sector that lags is half enveloped and falls faster.
+  - **Result:** the whole border moves slowly together instead of single bulges forming.
+  - **Stalled battle groups** shift to the sectors that are behind.
+- **Wear.** In a long offensive, advance rates fall day by day.
 - **Defenders.** The defending side puts men into the sector according to the defense strength, limited by what it has free after its other commitments. It brings up reserves against each thrust, so a breakthrough slows down after a day or so. The attacking group then stalls and shifts its effort to another part of the front.
-- **Counter-attacks.** Defenders strike the flanks of salients and retake ground for a few hours.
+- **Counter-attacks.** Defenders strike the flanks of salients and retake ground for a few hours. The tip of a salient is the easiest place to cut.
 - **Ground.** Mountains (measured from the shaded relief) slow movement and favour the defender; rivers are hard to cross; towns are fortified and hold out, so the front flows around them.
 - **Outflanking.** Ground surrounded on several sides falls quickly. Territory cut off completely loses supply, fights ever more weakly and finally surrenders, and its garrison is taken prisoner.
 - **Losses.** Casualties come from the strength of both sides along the engaged front; about 30% are killed. An offensive whose men fall below a minimum, or that stops gaining ground for a day, ends.
