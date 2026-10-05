@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Iran 1902 War Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IM+Fell+English&family=IM+Fell+English+SC&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="map" aria-hidden="true"></canvas>
+  <canvas id="overlay" aria-label="Map of Iran. Drag to draw an offensive, scroll to zoom." role="img"></canvas>
+
+  <header class="plate clock" id="clock">
+    <div class="clock-date" id="clockDate">Wednesday, 8 January 1902</div>
+    <div class="clock-row">
+      <span class="clock-hour" id="clockHour">00:00</span>
+      <div class="speed" role="group" aria-label="Simulation speed">
+        <button type="button" id="btnPause" aria-pressed="false" title="Pause (Space)">❚❚</button>
+        <button type="button" class="spd" data-speed="0" title="1 hour every 10 seconds (key 1)">1×</button>
+        <button type="button" class="spd" data-speed="1" title="1 hour every 3 seconds (key 2)">2×</button>
+        <button type="button" class="spd" data-speed="2" title="1 hour every second (key 3)">10×</button>
+        <button type="button" class="spd" data-speed="3" title="4 hours every second (key 4)">40×</button>
+      </div>
+    </div>
+    <div class="hourbar" aria-hidden="true"><i id="hourFill"></i></div>
+    <div class="clock-note" id="clockNote">1 hour = 10 s</div>
+  </header>
+
+  <aside class="plate command" id="command" aria-label="Command">
+    <div class="brand">
+      <span class="brand-title">Iran · 1902</span>
+      <span class="brand-sub">Theatre of operations</span>
+    </div>
+
+    <div class="sides" role="group" aria-label="Side you command">
+      <button type="button" class="side" data-side="1" id="sideBlue" aria-pressed="false">
+        <span class="side-name">Blue</span>
+        <span class="side-area" id="areaBlue">–</span>
+        <span class="side-meta" id="metaBlue">–</span>
+      </button>
+      <button type="button" class="side" data-side="2" id="sideRed" aria-pressed="false">
+        <span class="side-name">Red</span>
+        <span class="side-area" id="areaRed">–</span>
+        <span class="side-meta" id="metaRed">–</span>
+      </button>
+    </div>
+    <div class="balance" aria-hidden="true"><i id="balBlue"></i><i id="balRed"></i></div>
+
+    <section class="panel" id="panelIdle">
+      <p class="lede">Pick the side you command for the next operation. You can switch sides between offensives.</p>
+    </section>
+
+    <section class="panel" id="panelPlan" hidden>
+      <p class="lede" id="planHint"></p>
+      <dl class="facts" id="planFacts" hidden>
+        <dt>Operation</dt><dd id="pfMode"></dd>
+        <dt>Objective</dt><dd id="pfArea"></dd>
+        <dt>Towns</dt><dd id="pfTowns"></dd>
+        <dt>Provinces</dt><dd id="pfProv"></dd>
+      </dl>
+      <div class="actions">
+        <button type="button" class="primary" id="btnAttack" disabled>Attack</button>
+        <button type="button" id="btnFlip" disabled title="Take the other side of your line">Flip objective</button>
+        <button type="button" id="btnClear" disabled>Clear</button>
+      </div>
+    </section>
+
+    <section class="panel" id="panelOp" hidden>
+      <div class="op-title"><span class="pulse" aria-hidden="true"></span><span id="opTitle">Offensive</span></div>
+      <div class="progress" aria-hidden="true"><i id="opBar"></i></div>
+      <dl class="facts">
+        <dt>Taken</dt><dd id="opTaken"></dd>
+        <dt>Defense</dt><dd id="opDefense"></dd>
+        <dt>Running for</dt><dd id="opElapsed"></dd>
+        <dt>Expected end</dt><dd id="opEnd"></dd>
+      </dl>
+      <div class="actions">
+        <button type="button" id="btnHalt" title="Stop and keep the ground taken so far">Halt offensive</button>
+      </div>
+    </section>
+
+    <footer class="cmd-foot">
+      <label><input type="checkbox" id="optLabels" checked> Towns</label>
+      <label><input type="checkbox" id="optProvinces" checked> Provinces</label>
+      <button type="button" class="link" id="btnReset">New war</button>
+    </footer>
+  </aside>
+
+  <aside class="plate diary" id="diary" aria-label="War diary">
+    <button type="button" class="diary-head" id="diaryToggle" aria-expanded="true" aria-controls="log">
+      <span>War diary</span><span class="diary-count" id="diaryCount"></span>
+    </button>
+    <ol class="log" id="log"></ol>
+  </aside>
+
+  <div class="mapctl" role="group" aria-label="Zoom">
+    <button type="button" id="zoomIn" title="Zoom in (+)" aria-label="Zoom in">+</button>
+    <button type="button" id="zoomOut" title="Zoom out (−)" aria-label="Zoom out">−</button>
+    <button type="button" id="zoomFit" title="Show all of Iran (F)" aria-label="Show all of Iran">⤢</button>
+  </div>
+
+  <div class="hint" id="hint"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="modal" id="attackModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="amTitle">
+      <h2 id="amTitle">Offensive</h2>
+      <p class="am-sub" id="amSub"></p>
+      <label class="am-label" for="defense">
+        <span>Enemy defense strength</span>
+        <output id="defenseOut" for="defense">50</output>
+      </label>
+      <input type="range" id="defense" min="1" max="100" value="50">
+      <div class="am-scale" aria-hidden="true"><span>Militia</span><span>Fortified line</span></div>
+      <div class="am-tier" id="defenseTier">Regular army</div>
+      <dl class="facts">
+        <dt>Estimated duration</dt><dd id="amDuration"></dd>
+        <dt>Expected completion</dt><dd id="amEnd"></dd>
+        <dt>Rate of advance</dt><dd id="amRate"></dd>
+        <dt>Spearheads</dt><dd id="amAxes"></dd>
+      </dl>
+      <p class="am-note">Stronger defenses slow the whole front. Mountains, rivers and towns slow it further; spearheads break through faster.</p>
+      <div class="actions">
+        <button type="button" id="amCancel">Cancel</button>
+        <button type="button" class="primary" id="amLaunch">Launch attack</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="loading" id="loading"><span>Surveying the theatre…</span></div>
+</div>
+
+<script src="js/data/geo.js"></script>
+<script src="js/data/grid.js"></script>
+<script src="js/data/relief.js"></script>
+<script src="js/util.js"></script>
+<script src="js/world.js"></script>
+<script src="js/planner.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/renderer.js"></script>
+<script src="js/overlay.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
