@@ -53,6 +53,7 @@
       this.planner = new WM.Planner(world);
       this.renderer = new WM.Renderer($('map'), world, images);
       this.overlay = new WM.Overlay($('overlay'), world);
+      this.fx = new WM.Effects($('fx'), world);
       this.st = {
         time: 0, speed: 0, paused: false,
         mode: 'sandbox', player: 0, level: 'normal',
@@ -94,6 +95,7 @@
 
     // ------------------------------------------------------------- state ---
     newGame(mode, player, level, quiet) {
+      if (this.fx) this.fx.clear();
       const st = this.st;
       this.world.applyScenario();
       this.war = new WM.War(this.world);
@@ -206,6 +208,7 @@
       v.dpr = Math.min(window.devicePixelRatio || 1, 2);
       this.renderer.resize(v.w, v.h, v.dpr);
       this.overlay.resize(v.w, v.h, v.dpr);
+      this.fx.resize(v.w, v.h, v.dpr);
       v.fitScale = this.fitParams().scale;
       this.clampView();
       this.mapDirty = this.overlayDirty = true;
@@ -1212,6 +1215,7 @@
     }
 
     startReplay() {
+      this.fx.clear();
       const st = this.st;
       this.snapshot(true);
       if (!st.history || st.history.length < 2) { this.toast('Nothing to replay yet. Let the war run a little first.'); return; }
@@ -1335,6 +1339,10 @@
         });
         this.overlayDirty = false;
       }
+      // Shell bursts along the fighting fronts, animated every frame.
+      const firing = !st.paused && !this.dialogOpen();
+      this.fx.update(dt, this.view, war, firing, 1 / SPEEDS[st.speed].sph);
+      this.fx.draw(this.view);
       if (now - this.timers.save > 10000) this.save();
       requestAnimationFrame((t) => this.frame(t));
     }

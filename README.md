@@ -98,6 +98,7 @@ js/sim.js           battle engine: armies, battle groups, counter-attacks, pocke
                     training and readiness, forecasts
 js/ai.js            the computer opponent for the campaign
 js/renderer.js      WebGL2 map: stencilled land/water/Iran, relief shading, live ownership
+js/fx.js            shell bursts, fire, smoke and scorch marks on active fronts (Canvas 2D)
 js/overlay.js       borders, lines, spearhead arrows, troop numbers, town labels (Canvas 2D)
 js/app.js           clock, camera, input, panels
 js/data/*.js        generated map data (do not edit)
@@ -165,3 +166,20 @@ Territory stays clean:
 - **During play**, any cut-off scrap of up to about 600 km² that touches the other side surrenders within two game hours. This includes scraps backed onto a foreign border or the coast.
 - **Larger encirclements** still hold out for a while before they surrender.
 - **Real islands in the Gulf** are left alone.
+
+## Battlefield effects
+
+Artillery fire shows along every active front, and it is heaviest where battle groups press and where counter-attacks strike.
+
+Each shell burst has these stages:
+- A ground flash, then a ragged fireball that cools from white-hot through orange.
+- Flying sparks and a ring of raised dust.
+- A dust cloud that turns into a smoke plume, spreads, and drifts downwind.
+- A scorch mark on the ground that fades after a while.
+
+How the fire varies:
+- Heavy shells are bigger and leave dark smoke.
+- About a third of the fire comes in salvos of several shells.
+- Larger battles bring more guns.
+
+The effects pause when the game pauses, are drawn larger than life so they show when zoomed out, and are toned down if the system asks for reduced motion.
